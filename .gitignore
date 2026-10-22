@@ -1,0 +1,10 @@
+# 凭证与增量状态：不进版本库
+config.json
+.state/
+
+# 构建产物
+/mrorsync.exe
+/dist/
+
+# 运行日志
+*.log

@@ -1,0 +1,21 @@
+{
+  "root": "D:/",
+  "remote_base": "/",
+  "app_id": "",
+  "app_key": "",
+  "secret_key": "",
+  "sign_key": "",
+  "access_token": "",
+  "refresh_token": "",
+  "max_workers": 2,
+  "part_workers": 2,
+  "excludes": [
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "node_modules",
+    ".git",
+    ".state",
+    "pagefile.sys",
+    "hiberfil.sys"
+  ]
+}
