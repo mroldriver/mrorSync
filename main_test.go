@@ -499,6 +499,9 @@ func TestSyncFlow(t *testing.T) {
 	if !strings.Contains(out, "完成") {
 		t.Fatalf("expected summary:\n%s", out)
 	}
+	if !strings.Contains(out, "实传") {
+		t.Fatalf("expected transferred-bytes label in summary:\n%s", out)
+	}
 
 	// 10) --only matches case-insensitively and stays inside the subtree
 	code, out = e.run("--only", "SUB", "--config", e.cfgPath)
@@ -516,7 +519,8 @@ func TestSyncFlow(t *testing.T) {
 	}
 
 	var last struct {
-		Failed int `json:"failed"`
+		Failed   int   `json:"failed"`
+		BytesNet int64 `json:"bytes_net"`
 	}
 	lastData, err := os.ReadFile(filepath.Join(e.stateDir, "last-run.json"))
 	if err != nil {
@@ -527,6 +531,9 @@ func TestSyncFlow(t *testing.T) {
 	}
 	if last.Failed != 0 {
 		t.Fatalf("last-run failed=%d", last.Failed)
+	}
+	if last.BytesNet <= 0 {
+		t.Fatalf("last-run bytes_net=%d, want > 0", last.BytesNet)
 	}
 }
 

@@ -72,10 +72,10 @@ func TestRetryAfter(t *testing.T) {
 }
 
 func TestBackoffBoundsAndJitter(t *testing.T) {
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < 7; attempt++ {
 		base := time.Duration(1<<attempt) * time.Second
-		if base > 30*time.Second {
-			base = 30 * time.Second
+		if base > 8*time.Second {
+			base = 8 * time.Second
 		}
 		d := backoff(attempt)
 		if d < base/2 || d > base {
@@ -83,8 +83,8 @@ func TestBackoffBoundsAndJitter(t *testing.T) {
 		}
 
 		busyBase := time.Duration(5<<attempt) * time.Second
-		if busyBase > 60*time.Second {
-			busyBase = 60 * time.Second
+		if busyBase > 40*time.Second {
+			busyBase = 40 * time.Second
 		}
 		bd := busyBackoff(attempt)
 		if bd < busyBase/2 || bd > busyBase {

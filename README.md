@@ -219,13 +219,13 @@ mrorsync.exe login [--config 路径]
 | `utime` | 上传完成时间 |
 
 `last-run.json` 字段：`at`、`root`、`remote_base`、`scanned`、`todo`、`ok`、`rapid`
-（秒传）、`checked`（验证一致）、`failed`、`parts`（上传分片）、`deleted`、`bytes`、
-`seconds`、`failures[]`（`rel` + `error`）。
+（秒传）、`checked`（验证一致）、`failed`、`parts`（上传分片）、`deleted`、`bytes`
+（逻辑大小）、`bytes_net`（实传字节）、`seconds`、`failures[]`（`rel` + `error`）。
 
 ## 可靠性设计
 
-- **重试**：网络错误/5xx 最多 4 次，1s/2s/4s 退避并加 jitter（上限 30s）；
-  31034/31363 单独走 5s/10s/20s… 最长 60s 的窗口；HTTP 429 读 `Retry-After`
+- **重试**：网络错误/5xx 最多 5 次，1s/2s/4s/8s 退避并加 jitter（上限 8s）；
+  31034/31363 单独走 5s/10s/20s/40s 的窗口（上限 40s）；HTTP 429 读 `Retry-After`
   （支持秒数与 HTTP-date）；普通 4xx 不重试。
 - **token 续期**：-6/110/111 触发 refresh 并原子写回 `config.json`；刷新后**重建请求**
   再发；并发刷新用互斥 + token 比对去重，避免把一次性 refresh_token 用两次。
@@ -365,6 +365,14 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.3
+
+- 删除统计只计真正删掉的条目，已不存在的远端文件不再虚增 `deleted`
+- worker 增加 panic 兜底，单个文件异常不再带崩整轮
+- 统计区分逻辑大小与实传字节，`last-run.json` 新增 `bytes_net`
+- `--only -h` 不再被误判为帮助；`login` 拒绝多余参数
+- 重试次数 4→5，退避上限改为可达的 8s / 40s
 
 ### 3.0.2
 

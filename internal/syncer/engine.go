@@ -21,7 +21,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.2"
+var Version = "3.0.3"
 
 // Options are the CLI switches, shared with main.
 type Options struct {
@@ -56,6 +56,7 @@ type Failure struct {
 type stats struct {
 	ok, rapid, checked, failed int64
 	parts, bytes, deleted      int64
+	netBytes                   int64
 }
 
 // Engine runs one sync pass.
@@ -249,7 +250,16 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 	poolErr := runPool(ctx, cfg.MaxWorkers, len(todo), func(ctx context.Context, i int) error {
 		item := todo[i]
 		n := atomic.AddInt64(&idx, 1)
-		res, err := e.syncOne(ctx, item)
+		var res result
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("内部错误(panic): %v", r)
+				}
+			}()
+			res, err = e.syncOne(ctx, item)
+		}()
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -290,6 +300,7 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		e.st.ok++
 		e.st.parts += int64(res.Parts)
 		e.st.bytes += item.entry.Size
+		e.st.netBytes += res.Bytes
 		if res.State == "rapid" {
 			e.st.rapid++
 		}
@@ -349,9 +360,9 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 	e.mu.Lock()
 	st := e.st
 	e.mu.Unlock()
-	logf("完成: 成功 %d（秒传 %d，验证一致 %d，上传分片 %d）/ 失败 %d / 删除 %d / %s / %.0fs / %s/s",
+	logf("完成: 成功 %d（秒传 %d，验证一致 %d，上传分片 %d）/ 失败 %d / 删除 %d / 逻辑 %s（实传 %s）/ %.0fs / %s/s",
 		st.ok, st.rapid, st.checked, st.parts, st.failed, st.deleted,
-		HumanBytes(st.bytes), cost, HumanBytes(int64(float64(st.bytes)/cost)))
+		HumanBytes(st.bytes), HumanBytes(st.netBytes), cost, HumanBytes(int64(float64(st.netBytes)/cost)))
 
 	if len(e.failures) > 0 {
 		logf("失败清单（前 20 个，manifest 未记成功，下次自动重试）:")
@@ -377,6 +388,7 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		Parts:      int(st.parts),
 		Deleted:    int(st.deleted),
 		Bytes:      st.bytes,
+		BytesNet:   st.netBytes,
 		Seconds:    float64(int(cost*10)) / 10,
 		Failures:   e.failures,
 	})
@@ -406,6 +418,7 @@ type result struct {
 	MD5   string
 	FSID  int64
 	Parts int
+	Bytes int64 // bytes actually uploaded (0 for rapid/same)
 }
 
 func (e *Engine) syncOne(ctx context.Context, it todoItem) (result, error) {
@@ -452,13 +465,13 @@ func (e *Engine) syncOne(ctx context.Context, it todoItem) (result, error) {
 		}
 	}
 
-	parts := 0
+	parts, upBytes := 0, int64(0)
 	if h.Size > 0 && len(missing) > 0 {
 		f, err := os.Open(abs)
 		if err != nil {
 			return result{}, err
 		}
-		parts, err = e.uploadParts(ctx, f, remote, pre.UploadID, missing)
+		parts, upBytes, err = e.uploadParts(ctx, f, remote, pre.UploadID, missing)
 		f.Close()
 		if err != nil {
 			return result{}, err
@@ -468,11 +481,11 @@ func (e *Engine) syncOne(ctx context.Context, it todoItem) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	return result{State: "upload", MD5: h.MD5, FSID: fsid, Parts: parts}, nil
+	return result{State: "upload", MD5: h.MD5, FSID: fsid, Parts: parts, Bytes: upBytes}, nil
 }
 
 // uploadParts uploads the missing block indices with bounded parallelism.
-func (e *Engine) uploadParts(ctx context.Context, f *os.File, remote, uploadID string, seqs []int) (int, error) {
+func (e *Engine) uploadParts(ctx context.Context, f *os.File, remote, uploadID string, seqs []int) (int, int64, error) {
 	workers := min(e.cfg.PartWorkers, len(seqs))
 	if workers < 1 {
 		workers = 1
@@ -486,6 +499,7 @@ func (e *Engine) uploadParts(ctx context.Context, f *os.File, remote, uploadID s
 		firstErr error
 		next     int64 = -1
 		done     int64
+		uploaded int64
 	)
 	setErr := func(err error) {
 		mu.Lock()
@@ -524,17 +538,18 @@ func (e *Engine) uploadParts(ctx context.Context, f *os.File, remote, uploadID s
 					return
 				}
 				atomic.AddInt64(&done, 1)
+				atomic.AddInt64(&uploaded, int64(n))
 			}
 		}()
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return int(done), firstErr
+		return int(done), uploaded, firstErr
 	}
 	if ctx.Err() != nil {
-		return int(done), ctx.Err()
+		return int(done), uploaded, ctx.Err()
 	}
-	return int(done), nil
+	return int(done), uploaded, nil
 }
 
 // runPool runs fn over count items with a bounded number of workers and cancels
@@ -613,6 +628,7 @@ type lastRun struct {
 	Parts      int       `json:"parts"`
 	Deleted    int       `json:"deleted"`
 	Bytes      int64     `json:"bytes"`
+	BytesNet   int64     `json:"bytes_net"`
 	Seconds    float64   `json:"seconds"`
 	Failures   []Failure `json:"failures"`
 }

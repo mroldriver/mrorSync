@@ -225,7 +225,7 @@ func (c *Client) refresh(ctx context.Context, oldToken string) bool {
 // refresh changes the request body, so the request must be recreated.
 func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Request, error), op string) (map[string]any, error) {
 	var lastErr error
-	const tries = 4
+	const tries = 5
 	for attempt := 0; attempt < tries; attempt++ {
 		req, err := build(ctx)
 		if err != nil {
@@ -367,8 +367,12 @@ func (c *Client) ensureOne(ctx context.Context, dir string) error {
 	}
 	if call, ok := c.pending[dir]; ok {
 		c.dirMu.Unlock()
-		<-call.done
-		return call.err
+		select {
+		case <-call.done:
+			return call.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	call := &dirCall{done: make(chan struct{})}
 	c.pending[dir] = call
@@ -522,12 +526,16 @@ func (c *Client) Delete(ctx context.Context, paths []string) (int, error) {
 					continue
 				}
 				errno := int(num(one["errno"]))
-				if errno != 0 && errno != -9 && errno != 31064 {
+				switch {
+				case errno == 0:
+					removed++
+				case errno == -9 || errno == 31064:
+					// already gone: idempotent success, but not a deletion
+				default:
 					return removed, fmt.Errorf("删除部分失败: %s(errno=%d)", str(one["path"]), errno)
 				}
 			}
 		}
-		removed += len(batch)
 	}
 	return removed, nil
 }
@@ -613,22 +621,22 @@ func retryAfter(v string) time.Duration {
 	return 0
 }
 
-// backoff grows 1s/2s/4s... up to 30s, with jitter so concurrent workers do not
-// retry in lockstep.
+// backoff grows 1s/2s/4s/8s with jitter and a 8s cap, so concurrent workers do
+// not retry in lockstep.
 func backoff(attempt int) time.Duration {
 	d := time.Duration(1<<attempt) * time.Second
-	if d > 30*time.Second {
-		d = 30 * time.Second
+	if d > 8*time.Second {
+		d = 8 * time.Second
 	}
 	return withJitter(d)
 }
 
 // busyBackoff is for 31034/31363: Baidu's throttle needs a longer window than a
-// transient network error, so 5s/10s/20s... up to 60s.
+// transient network error, so 5s/10s/20s/40s with a 40s cap.
 func busyBackoff(attempt int) time.Duration {
 	d := time.Duration(5<<attempt) * time.Second
-	if d > 60*time.Second {
-		d = 60 * time.Second
+	if d > 40*time.Second {
+		d = 40 * time.Second
 	}
 	return withJitter(d)
 }

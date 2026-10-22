@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -46,14 +47,13 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 	fs.BoolVar(&o.ForceDelete, "force-delete", false, "跳过删除比例保护")
 	fs.StringVar(&o.ConfigPath, "config", config.DefaultPath(), "配置文件路径")
 	fs.BoolVar(&version, "version", false, "打印版本")
+	fs.Usage = func() {} // --help is rendered by printHelp below
 
-	for _, a := range args {
-		if a == "-h" || a == "--help" || a == "-help" {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
 			printHelp(out)
 			return 0
 		}
-	}
-	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if version {
@@ -96,7 +96,16 @@ func runLogin(args []string, out io.Writer, in io.Reader) int {
 	fs.SetOutput(out)
 	var cfgPath string
 	fs.StringVar(&cfgPath, "config", config.DefaultPath(), "配置文件路径")
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printHelp(out)
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(out, "未知参数: %s\n", fs.Arg(0))
 		return 2
 	}
 
