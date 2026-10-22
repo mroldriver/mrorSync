@@ -316,7 +316,8 @@ git push
 │   ├── fsutil/          原子写文件
 │   └── syncer/          扫描、manifest、哈希缓存、上传引擎
 ├── build.ps1            构建脚本（自动找 Go）
-└── config.example.json  配置模板
+├── config.example.json  配置模板
+└── AGENTS.md            给 AI/自动化代理的开发约定
 ```
 
 版本号在 `internal/syncer/engine.go` 的 `Version`；改完跑 `.\build.ps1 -Test` 再提交。
