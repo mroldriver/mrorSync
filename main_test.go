@@ -48,6 +48,7 @@ type mockState struct {
 	busy         int
 	seq          int
 	createExists bool
+	tooMany      int
 }
 
 func newMockState() *mockState {
@@ -113,6 +114,12 @@ func (s *mockState) handler() http.Handler {
 		if s.busy > 0 {
 			s.busy--
 			writeJSON(w, map[string]any{"errno": 31034, "request_id": "busy"})
+			return
+		}
+		if s.tooMany > 0 {
+			s.tooMany--
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -597,6 +604,85 @@ func TestAuthFailureStopsRun(t *testing.T) {
 	}
 	if creates != 0 {
 		t.Fatalf("auth failure still created %d files", creates)
+	}
+}
+
+func TestDeleteProtection(t *testing.T) {
+	e := setup(t)
+	for i := 0; i < 30; i++ {
+		mustWrite(t, filepath.Join(e.root, "bulk", fmt.Sprintf("f%02d.txt", i)), []byte("bulk"))
+	}
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+	if got := len(e.manifest()); got != 35 {
+		t.Fatalf("manifest after seed = %d, want 35", got)
+	}
+
+	for i := 0; i < 25; i++ {
+		if err := os.Remove(filepath.Join(e.root, "bulk", fmt.Sprintf("f%02d.txt", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out := e.run("--apply", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("protected run exit=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "[保护]") {
+		t.Fatalf("expected delete protection message:\n%s", out)
+	}
+	e.mock.mu.Lock()
+	deletes := len(e.mock.deletes)
+	e.mock.mu.Unlock()
+	if deletes != 0 {
+		t.Fatalf("protection still deleted %d remote files", deletes)
+	}
+	if got := len(e.manifest()); got != 35 {
+		t.Fatalf("protected run dropped manifest entries: %d", got)
+	}
+}
+
+func TestNoDeleteKeepsRemote(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(e.root, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	code, out := e.run("--apply", "--no-delete", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("--no-delete exit=%d\n%s", code, out)
+	}
+	e.mock.mu.Lock()
+	deletes := len(e.mock.deletes)
+	e.mock.mu.Unlock()
+	if deletes != 0 {
+		t.Fatalf("--no-delete deleted %d remote files", deletes)
+	}
+	if _, ok := e.manifest()["a.txt"]; !ok {
+		t.Fatal("--no-delete dropped the manifest entry")
+	}
+}
+
+func TestHTTP429Retried(t *testing.T) {
+	e := setup(t)
+	e.mock.mu.Lock()
+	e.mock.tooMany = 1
+	e.mock.mu.Unlock()
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("429 retry exit=%d\n%s", code, out)
+	}
+	e.mock.mu.Lock()
+	left := e.mock.tooMany
+	e.mock.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("mock still has %d 429 responses pending", left)
+	}
+	if got := len(e.manifest()); got != 5 {
+		t.Fatalf("manifest after 429 retry = %d, want 5", got)
 	}
 }
 
