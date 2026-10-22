@@ -9,6 +9,7 @@
   "refresh_token": "",
   "max_workers": 2,
   "part_workers": 2,
+  "max_file_size": 4294967296,
   "excludes": [
     "$RECYCLE.BIN",
     "System Volume Information",
