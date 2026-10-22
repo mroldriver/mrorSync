@@ -20,7 +20,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.6"
+var Version = "3.0.7"
 
 // BuildCommit is injected by build.ps1 (-ldflags -X) so --version can be tied to
 // a specific commit; it stays empty for plain `go build`.

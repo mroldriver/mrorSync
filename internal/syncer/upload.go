@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+
+	"mrorsync/internal/baidu"
 )
 
 type todoItem struct {
@@ -61,16 +63,7 @@ func (e *Engine) syncOne(ctx context.Context, it todoItem) (result, error) {
 		return result{}, fmt.Errorf("precreate 未返回 uploadid: %s", it.entry.Rel)
 	}
 
-	exists := make(map[string]bool, len(pre.BlockList))
-	for _, b := range pre.BlockList {
-		exists[b] = true
-	}
-	missing := make([]int, 0, len(h.Blocks))
-	for i, b := range h.Blocks {
-		if !exists[b] {
-			missing = append(missing, i)
-		}
-	}
+	missing := missingBlocks(pre, h.Blocks)
 
 	parts, upBytes := 0, int64(0)
 	if h.Size > 0 && len(missing) > 0 {
@@ -89,6 +82,59 @@ func (e *Engine) syncOne(ctx context.Context, it todoItem) (result, error) {
 		return result{}, err
 	}
 	return result{State: "upload", MD5: h.MD5, FSID: fsid, Parts: parts, Bytes: upBytes}, nil
+}
+
+// missingBlocks interprets precreate's block_list. Baidu currently returns the
+// indexes that still need uploading; older responses (and the mock server) return
+// md5 strings of blocks already present. An empty list means "upload everything".
+func missingBlocks(pre *baidu.Precreate, blocks []string) []int {
+	if len(blocks) == 0 {
+		return nil
+	}
+	if len(pre.BlockList) == 0 {
+		out := make([]int, len(blocks))
+		for i := range blocks {
+			out[i] = i
+		}
+		return out
+	}
+	if idx, ok := blockIndexes(pre.BlockList); ok {
+		out := make([]int, 0, len(idx))
+		for _, i := range idx {
+			if i >= 0 && i < len(blocks) {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	exists := make(map[string]bool, len(pre.BlockList))
+	for _, v := range pre.BlockList {
+		if s, ok := v.(string); ok {
+			exists[s] = true
+		}
+	}
+	out := make([]int, 0, len(blocks))
+	for i, b := range blocks {
+		if !exists[b] {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func blockIndexes(list []any) ([]int, bool) {
+	out := make([]int, 0, len(list))
+	for _, v := range list {
+		switch n := v.(type) {
+		case float64:
+			out = append(out, int(n))
+		case int:
+			out = append(out, n)
+		default:
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // uploadParts uploads the missing block indices with bounded parallelism.

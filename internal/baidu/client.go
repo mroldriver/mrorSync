@@ -88,8 +88,11 @@ func (e *HTTPError) Error() string {
 type Precreate struct {
 	ReturnType int
 	UploadID   string
-	BlockList  []string
-	FSID       int64
+	// BlockList is either the indexes that still need uploading (current API)
+	// or md5 strings of blocks already present (older responses/tests); the
+	// uploader tells them apart by element type.
+	BlockList []any
+	FSID      int64
 }
 
 // Client speaks the Baidu xpan API. It is safe for concurrent use.
@@ -337,14 +340,26 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 }
 
 func (c *Client) call(ctx context.Context, method string, params url.Values) (map[string]any, error) {
+	return c.callQuery(ctx, method, nil, params)
+}
+
+// callQuery is call with some parameters forced into the query string. Baidu
+// rejects a couple of control params when they only appear in the form body:
+// method/access_token always, and filemanager's opera/async for delete.
+func (c *Client) callQuery(ctx context.Context, method string, query, params url.Values) (map[string]any, error) {
 	return c.do(ctx, func(ctx context.Context) (*http.Request, error) {
+		q := url.Values{}
+		for k, vs := range query {
+			q[k] = vs
+		}
+		q.Set("method", method)
+		q.Set("access_token", c.token())
+
 		v := url.Values{}
 		for k, vs := range params {
 			v[k] = vs
 		}
-		v.Set("method", method)
-		v.Set("access_token", c.token())
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.panAPI, strings.NewReader(v.Encode()))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.panAPI+"?"+q.Encode(), strings.NewReader(v.Encode()))
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +447,7 @@ func (c *Client) Precreate(ctx context.Context, remote string, size int64, block
 	p := &Precreate{
 		ReturnType: int(num(m["return_type"])),
 		UploadID:   str(m["uploadid"]),
-		BlockList:  stringSlice(m["block_list"]),
+		BlockList:  anySlice(m["block_list"]),
 	}
 	if info, ok := m["info"].(map[string]any); ok {
 		p.FSID = num(info["fs_id"])
@@ -520,11 +535,9 @@ func (c *Client) Delete(ctx context.Context, paths []string) (int, error) {
 		if err != nil {
 			return removed, err
 		}
-		m, err := c.call(ctx, "filemanager", url.Values{
-			"opera":    {"delete"},
-			"async":    {"0"},
-			"filelist": {string(list)},
-		})
+		m, err := c.callQuery(ctx, "filemanager",
+			url.Values{"opera": {"delete"}, "async": {"0"}},
+			url.Values{"filelist": {string(list)}})
 		if err != nil {
 			return removed, err
 		}
@@ -577,18 +590,12 @@ func str(v any) string {
 	return ""
 }
 
-func stringSlice(v any) []string {
+func anySlice(v any) []any {
 	arr, ok := v.([]any)
 	if !ok {
 		return nil
 	}
-	out := make([]string, 0, len(arr))
-	for _, it := range arr {
-		if s, ok := it.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
+	return arr
 }
 
 func md5Hex(b []byte) string {

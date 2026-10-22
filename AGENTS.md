@@ -113,6 +113,11 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 
 ## 常见坑
 
+- **百度 API 契约**：`method`、`access_token` 必须放 query string；`filemanager` 的
+  `opera`/`async` 也必须在 query，只有 `filelist` 放 body。放错位置分别得到
+  HTTP 400 `Unsupported open api` 和 `errno=2`。
+- `precreate` 返回的 `block_list` 是**待上传的分片序号**（数字），不是 md5；旧版/测试
+  返回 md5 列表，解析时按元素类型区分。
 - CRLF 警告来自 Windows 换行，不影响构建。
 - Windows 上 0600 权限由 ACL 决定，别在文档里承诺 POSIX 权限。
 - `precreate` 返回 `return_type=2` 是秒传；非 2 且没有 `uploadid` 是错误；空文件用
@@ -141,3 +146,4 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - 2026-10-22：3.0.4，版本注入提交号、ci.ps1、拆分 upload.go、清理死代码。
 - 2026-10-22：3.0.5，测试按场景拆分、--limit 日志顺序、OKRels 单次遍历。
 - 2026-10-22：3.0.6，配置版本/tuning/环境变量/CLI 覆盖、print-config/check-config。
+- 2026-10-22：3.0.7，真实 API 契约修正（query 参数、block_list 序号），完成真机上传/删除验证。

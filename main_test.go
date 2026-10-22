@@ -86,13 +86,16 @@ func (s *mockState) handler() http.Handler {
 			writeJSON(w, map[string]any{"errno": 31023})
 			return
 		}
+		// The real API requires method/access_token in the query string and
+		// rejects them in the form body, so the mock enforces the same contract.
+		q := r.URL.Query()
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if r.PostForm.Get("access_token") != s.token {
+		if q.Get("access_token") != s.token {
 			writeJSON(w, map[string]any{"errno": -6})
 			return
 		}
-		switch r.PostForm.Get("method") {
+		switch q.Get("method") {
 		case "precreate":
 			s.precreate(w, r)
 		case "create":
@@ -187,6 +190,11 @@ func (s *mockState) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *mockState) delete(w http.ResponseWriter, r *http.Request) {
+	// Real API requires opera/async in the query; body-only params fail with errno 2.
+	if r.URL.Query().Get("opera") != "delete" || r.URL.Query().Get("async") != "0" {
+		writeJSON(w, map[string]any{"errno": 2, "info": []any{}})
+		return
+	}
 	var list []string
 	_ = json.Unmarshal([]byte(r.PostForm.Get("filelist")), &list)
 	info := make([]map[string]any, 0, len(list))

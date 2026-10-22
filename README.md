@@ -372,7 +372,7 @@ git push
 ```
 
 版本号在 `internal/syncer/engine.go` 的 `Version`；构建时 `build.ps1` 把当前提交注入
-`BuildCommit`，`--version` 会输出 `3.0.4 (abc1234)`。改完跑 `.\ci.ps1 -Build` 再提交。
+`BuildCommit`，`--version` 会输出 `3.0.7 (abc1234)`。改完跑 `.\ci.ps1 -Build` 再提交。
 
 ## 故障排查
 
@@ -402,6 +402,16 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.7
+
+- 适配百度真实 API：`method`/`access_token` 必须放在 query string，放 form body 会返回
+  HTTP 400 `Unsupported open api`；`filemanager` 的 `opera`/`async` 同样必须在 query，
+  否则返回 `errno=2`
+- `precreate` 的 `block_list` 按“待传分片序号”解析（同时兼容旧版/测试里的 md5 列表），
+  恢复分片复用
+- 首次真实环境验证：单文件上传、5 MB 分片上传、删除、`last-run.json` 全部通过
+- 测试 mock 改为同样强制 query 契约，防止回归
 
 ### 3.0.6
 
