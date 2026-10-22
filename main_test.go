@@ -324,12 +324,9 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-func TestSyncFlow(t *testing.T) {
+func TestFirstSyncUploadsEverything(t *testing.T) {
 	e := setup(t)
-	apply := []string{"--apply", "--config", e.cfgPath}
-
-	// 1) first sync
-	code, out := e.run(apply...)
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("first apply exit=%d\n%s", code, out)
 	}
@@ -348,21 +345,39 @@ func TestSyncFlow(t *testing.T) {
 	if man := e.manifest(); len(man) != 5 {
 		t.Fatalf("want 5 manifest entries, got %d", len(man))
 	}
+}
 
-	// 2) second run must be a no-op
-	code, out = e.run(apply...)
+func TestSecondRunIsNoop(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+	e.mock.mu.Lock()
+	parts, pre := len(e.mock.parts), e.mock.precreates
+	e.mock.mu.Unlock()
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("second apply exit=%d\n%s", code, out)
 	}
 	e.mock.mu.Lock()
 	parts2, pre2 := len(e.mock.parts), e.mock.precreates
 	e.mock.mu.Unlock()
-	if parts2 != parts || pre2 != precreates {
-		t.Fatalf("unchanged files hit the network: parts %d->%d precreate %d->%d", parts, parts2, precreates, pre2)
+	if parts2 != parts || pre2 != pre {
+		t.Fatalf("unchanged files hit the network: parts %d->%d precreate %d->%d", parts, parts2, pre, pre2)
 	}
+}
 
-	// 3) --full should rehash everything and hit rapid upload
-	code, out = e.run("--apply", "--full", "--config", e.cfgPath)
+func TestFullRehashesAndRapidUploads(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+	e.mock.mu.Lock()
+	creates := len(e.mock.creates)
+	e.mock.mu.Unlock()
+
+	code, out := e.run("--apply", "--full", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("full exit=%d\n%s", code, out)
 	}
@@ -370,13 +385,19 @@ func TestSyncFlow(t *testing.T) {
 		t.Fatalf("expected rapid upload in output:\n%s", out)
 	}
 	e.mock.mu.Lock()
-	creates := len(e.mock.creates)
+	createsAfter := len(e.mock.creates)
 	e.mock.mu.Unlock()
-	if creates != 5 {
-		t.Fatalf("rapid upload must not call create, creates=%d", creates)
+	if createsAfter != creates {
+		t.Fatalf("rapid upload must not call create: %d -> %d", creates, createsAfter)
+	}
+}
+
+func TestVerifyRepairsManifest(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
 	}
 
-	// 4) --verify fixes a corrupted manifest md5
 	man := e.manifest()
 	rec := man["a.txt"]
 	rec.MD5 = strings.Repeat("0", 32)
@@ -387,7 +408,7 @@ func TestSyncFlow(t *testing.T) {
 	e.mock.mu.Lock()
 	preBefore := e.mock.precreates
 	e.mock.mu.Unlock()
-	code, out = e.run("--apply", "--verify", "--config", e.cfgPath)
+	code, out := e.run("--apply", "--verify", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("verify exit=%d\n%s", code, out)
 	}
@@ -400,27 +421,34 @@ func TestSyncFlow(t *testing.T) {
 	if got := e.manifest()["a.txt"].MD5; got == strings.Repeat("0", 32) {
 		t.Fatal("verify did not repair md5")
 	}
+}
 
-	// 5) corrupt block caches; a failed record reuses known md5 but must self-heal
+func TestBlockCacheSelfHeals(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+
 	blocksDir := filepath.Join(e.stateDir, "blocks")
 	entries, _ := os.ReadDir(blocksDir)
 	for _, ent := range entries {
 		mustWrite(t, filepath.Join(blocksDir, ent.Name()), []byte("{broken"))
 	}
-	man = e.manifest()
-	rec = man["a.txt"]
+	man := e.manifest()
+	rec := man["a.txt"]
 	rec.State = "failed"
 	man["a.txt"] = rec
-	data, _ = json.Marshal(man)
+	data, _ := json.Marshal(man)
 	mustWrite(t, filepath.Join(e.stateDir, "manifest.json"), data)
 
-	code, out = e.run(apply...)
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("cache self-heal exit=%d\n%s", code, out)
 	}
 	if !strings.Contains(out, "秒传") {
 		t.Fatalf("expected rapid upload after cache corruption:\n%s", out)
 	}
+
 	valid := 0
 	entries, _ = os.ReadDir(blocksDir)
 	for _, ent := range entries {
@@ -435,13 +463,20 @@ func TestSyncFlow(t *testing.T) {
 	if valid == 0 {
 		t.Fatal("corrupt cache was not rewritten")
 	}
+}
 
-	// 6) expired token triggers refresh and retries with the new token
+func TestTokenRefreshPersists(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
+
 	e.mock.mu.Lock()
 	e.mock.token = "expired"
 	e.mock.mu.Unlock()
 	appendFile(t, filepath.Join(e.root, "a.txt"), []byte("!"))
-	code, out = e.run(apply...)
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("token refresh exit=%d\n%s", code, out)
 	}
@@ -451,18 +486,25 @@ func TestSyncFlow(t *testing.T) {
 	if refreshes != 1 {
 		t.Fatalf("want 1 refresh, got %d\n%s", refreshes, out)
 	}
+
 	var cfg map[string]any
 	cfgData, _ := os.ReadFile(e.cfgPath)
 	_ = json.Unmarshal(cfgData, &cfg)
 	if cfg["access_token"] != "t2" {
 		t.Fatalf("token not persisted, got %v", cfg["access_token"])
 	}
+}
 
-	// 7) deleting a local file prunes the remote
+func TestDeletePrunesRemote(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
 	if err := os.Remove(filepath.Join(e.root, "empty.txt")); err != nil {
 		t.Fatal(err)
 	}
-	code, out = e.run(apply...)
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("delete exit=%d\n%s", code, out)
 	}
@@ -475,66 +517,87 @@ func TestSyncFlow(t *testing.T) {
 	if got := len(e.manifest()); got != 4 {
 		t.Fatalf("manifest after delete = %d, want 4", got)
 	}
+}
 
-	// 8) --limit must never delete
+func TestLimitNeverDeletes(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("seed apply exit=%d\n%s", code, out)
+	}
 	if err := os.Remove(filepath.Join(e.root, "sub", "deep", "c.bin")); err != nil {
 		t.Fatal(err)
 	}
-	code, out = e.run("--apply", "--limit", "1", "--config", e.cfgPath)
+
+	code, out := e.run("--apply", "--limit", "1", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("limit exit=%d\n%s", code, out)
 	}
 	e.mock.mu.Lock()
-	deletesAfter := len(e.mock.deletes)
+	deletes := len(e.mock.deletes)
 	e.mock.mu.Unlock()
-	if deletesAfter != len(deletes) {
-		t.Fatal("--limit deleted remote files")
+	if deletes != 0 {
+		t.Fatalf("--limit deleted %d remote files", deletes)
 	}
 	if _, ok := e.manifest()["sub/deep/c.bin"]; !ok {
 		t.Fatal("--limit dropped the manifest entry")
 	}
+}
 
-	// 9) 31034 busy is retried with backoff
+func TestBusyIsRetried(t *testing.T) {
+	e := setup(t)
 	e.mock.mu.Lock()
 	e.mock.busy = 1
 	e.mock.mu.Unlock()
-	mustWrite(t, filepath.Join(e.root, "sub", "b.bin"), randomBytes(5*1024*1024+123))
-	code, out = e.run(apply...)
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("busy retry exit=%d\n%s", code, out)
 	}
-	if !strings.Contains(out, "完成") {
-		t.Fatalf("expected summary:\n%s", out)
+	if !strings.Contains(out, "完成") || !strings.Contains(out, "实传") {
+		t.Fatalf("expected summary with transferred bytes:\n%s", out)
 	}
-	if !strings.Contains(out, "实传") {
-		t.Fatalf("expected transferred-bytes label in summary:\n%s", out)
-	}
+}
 
-	// 10) --only matches case-insensitively and stays inside the subtree
-	code, out = e.run("--only", "SUB", "--config", e.cfgPath)
+func TestOnlyMatchesCaseInsensitively(t *testing.T) {
+	e := setup(t)
+	code, out := e.run("--only", "SUB", "--config", e.cfgPath)
 	if code != 0 {
 		t.Fatalf("--only exit=%d\n%s", code, out)
 	}
-	if !strings.Contains(out, "本地 1 个文件") {
-		t.Fatalf("--only SUB should scan exactly 1 file, got:\n%s", out)
+	// sub/b.bin + sub/deep/c.bin
+	if !strings.Contains(out, "本地 2 个文件") {
+		t.Fatalf("--only SUB should scan exactly 2 files, got:\n%s", out)
 	}
+}
 
-	// 11) --verify without --apply is rejected
-	code, _ = e.run("--verify", "--config", e.cfgPath)
+func TestVerifyRequiresApply(t *testing.T) {
+	e := setup(t)
+	code, _ := e.run("--verify", "--config", e.cfgPath)
 	if code != 2 {
 		t.Fatalf("--verify alone exit=%d, want 2", code)
 	}
+}
 
-	var last struct {
-		Failed   int   `json:"failed"`
-		BytesNet int64 `json:"bytes_net"`
+func TestLastRunRecordsStats(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run("--apply", "--config", e.cfgPath); code != 0 {
+		t.Fatalf("apply exit=%d\n%s", code, out)
 	}
-	lastData, err := os.ReadFile(filepath.Join(e.stateDir, "last-run.json"))
+	data, err := os.ReadFile(filepath.Join(e.stateDir, "last-run.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(lastData, &last); err != nil {
+	var last struct {
+		Scanned  int   `json:"scanned"`
+		OK       int   `json:"ok"`
+		Failed   int   `json:"failed"`
+		BytesNet int64 `json:"bytes_net"`
+	}
+	if err := json.Unmarshal(data, &last); err != nil {
 		t.Fatal(err)
+	}
+	if last.Scanned != 5 || last.OK != 5 {
+		t.Fatalf("last-run scanned=%d ok=%d, want 5/5", last.Scanned, last.OK)
 	}
 	if last.Failed != 0 {
 		t.Fatalf("last-run failed=%d", last.Failed)

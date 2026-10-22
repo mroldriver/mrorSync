@@ -20,7 +20,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.4"
+var Version = "3.0.5"
 
 // BuildCommit is injected by build.ps1 (-ldflags -X) so --version can be tied to
 // a specific commit; it stays empty for plain `go build`.
@@ -204,9 +204,9 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		todoBytes += ent.Size
 	}
 
+	okRels := e.man.OKRels()
 	var gone []string
 	if e.opts.Only == "" && !e.opts.NoDelete && scanned.Errors == 0 {
-		okRels := e.man.OKRels()
 		for rel := range okRels {
 			if !seen[rel] {
 				gone = append(gone, rel)
@@ -214,7 +214,7 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		}
 		sort.Strings(gone)
 	}
-	knownCount := len(e.man.OKRels())
+	knownCount := len(okRels)
 	if len(gone) > max(20, knownCount*20/100) && !e.opts.ForceDelete {
 		logf("[保护] 待删除 %d 个 / 清单共 %d 个, 超过 20%% 阈值, 本次不删", len(gone), knownCount)
 		logf("[保护] 确认这些文件是真删了, 再加 --force-delete 重跑")
@@ -225,10 +225,15 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		gone = nil
 	}
 
-	logf("待上传 %d 个（合计 %s）, 待删除 %d 个", len(todo), HumanBytes(todoBytes), len(gone))
+	// Truncate before logging so the summary matches what will actually run.
 	if e.opts.Limit > 0 && len(todo) > e.opts.Limit {
 		todo = todo[:e.opts.Limit]
+		todoBytes = 0
+		for _, it := range todo {
+			todoBytes += it.entry.Size
+		}
 	}
+	logf("待上传 %d 个（合计 %s）, 待删除 %d 个", len(todo), HumanBytes(todoBytes), len(gone))
 
 	if !e.opts.Apply {
 		for i, it := range todo {

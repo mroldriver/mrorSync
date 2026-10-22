@@ -291,13 +291,13 @@ schtasks /Delete /TN "BaiduBackup" /F  # 切换前先删旧的（指向旧脚本
 go test ./...
 ```
 
-`main_test.go` 在 127.0.0.1 起假 xpan 服务端，用临时目录跑完整流程，覆盖 11 个场景：
-首次上传、排除规则、分片复用、二次增量跳过、`--full` 秒传、`--verify` 修复、
-分片缓存损坏自愈、token 过期续期、远端清理、`--limit` 不删除、31034 退避、
-`--only` 大小写不敏感、`--verify` 缺 `--apply` 报错、`last-run.json` 落盘。
+`main_test.go` 在 127.0.0.1 起假 xpan 服务端，每个场景一个独立测试、各自用
+`t.TempDir()`，互不污染。覆盖：首次上传与分片复用、二次增量跳过、`--full` 秒传、
+`--verify` 修复、分片缓存损坏自愈、token 过期续期、远端清理、`--limit` 不删除、
+31034 退避、`--only` 大小写不敏感、`--verify` 缺 `--apply` 报错、`last-run.json`。
 不触碰真实网盘。
 
-另有独立测试：认证失效短路、`create` 已存在按成功、单实例锁、manifest 并发刷盘、
+另有：认证失效短路、`create` 已存在按成功、单实例锁、manifest 并发刷盘、
 孤立缓存清理、UTF-8 截断、退避上下界、删除保护阈值、`--no-delete`、HTTP 429 重试。
 
 `go test -race` 需要 C 编译器（gcc/mingw），本机未装，暂未启用。
@@ -368,6 +368,12 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.5
+
+- 端到端测试从单个 `TestSyncFlow` 拆成 17 个独立场景测试，各自临时目录、互不污染
+- `--limit` 先截断再打印“待上传”，日志与实际处理数量一致
+- `OKRels` 每次运行只遍历一次 manifest
 
 ### 3.0.4
 

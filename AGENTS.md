@@ -84,7 +84,8 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - **不准访问真实网盘**：测试一律用 `httptest` 假服务端 + `t.TempDir()`，通过
   `BAIDU_PAN_API` / `BAIDU_PCS_API` / `BAIDU_OAUTH_API` / `BAIDU_SYNC_STATE_DIR`
   注入，沿用 `main_test.go` 里 `env` 的做法。
-- `TestSyncFlow` 内有编号注释（1–11），新增场景继续编号，并更新 README 的测试段。
+- 测试按场景拆分为独立 `TestXxx`，每个复用 `setup(t)` 获得自己的临时目录；新增场景
+  请新建测试，不要恢复成共享状态的巨型用例，也不要让测试访问真实网盘。
 - 覆盖重点：首次上传、二次跳过、`--full`、`--verify`、坏分片缓存自愈、token 过期、
   删除保护、`--limit`、限流退避、`--only`、参数校验、`last-run.json`。
 
@@ -133,3 +134,4 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - 2026-10-22：3.0.2，manifest 批量刷盘、缓存无 fsync + 清理、退避 jitter。
 - 2026-10-22：3.0.3，删除计数、panic 兜底、实传统计、重试上限。
 - 2026-10-22：3.0.4，版本注入提交号、ci.ps1、拆分 upload.go、清理死代码。
+- 2026-10-22：3.0.5，测试按场景拆分、--limit 日志顺序、OKRels 单次遍历。
