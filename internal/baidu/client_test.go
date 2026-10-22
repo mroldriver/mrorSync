@@ -57,10 +57,38 @@ func TestRetryAfter(t *testing.T) {
 	if d := retryAfter("2"); d != 2*time.Second {
 		t.Fatalf("retryAfter(2)=%v", d)
 	}
-	if d := retryAfter("0.5"); d != 500*time.Millisecond {
-		t.Fatalf("retryAfter(0.5)=%v", d)
+	if d := retryAfter("0.5"); d != 0 {
+		t.Fatalf("retryAfter(0.5)=%v, want 0 (not an integer)", d)
 	}
-	if d := retryAfter("Wed, 21 Oct 2026 07:28:00 GMT"); d != 0 {
-		t.Fatalf("http-date should be unsupported for now, got %v", d)
+	if d := retryAfter("Wed, 21 Oct 2027 07:28:00 GMT"); d <= 0 {
+		t.Fatalf("http-date in the future should be honored, got %v", d)
+	}
+	if d := retryAfter("Wed, 21 Oct 2020 07:28:00 GMT"); d != 0 {
+		t.Fatalf("http-date in the past should be ignored, got %v", d)
+	}
+	if d := retryAfter("garbage"); d != 0 {
+		t.Fatalf("garbage retryAfter=%v", d)
+	}
+}
+
+func TestBackoffBoundsAndJitter(t *testing.T) {
+	for attempt := 0; attempt < 5; attempt++ {
+		base := time.Duration(1<<attempt) * time.Second
+		if base > 30*time.Second {
+			base = 30 * time.Second
+		}
+		d := backoff(attempt)
+		if d < base/2 || d > base {
+			t.Fatalf("backoff(%d)=%v, want within [%v,%v]", attempt, d, base/2, base)
+		}
+
+		busyBase := time.Duration(5<<attempt) * time.Second
+		if busyBase > 60*time.Second {
+			busyBase = 60 * time.Second
+		}
+		bd := busyBackoff(attempt)
+		if bd < busyBase/2 || bd > busyBase {
+			t.Fatalf("busyBackoff(%d)=%v, want within [%v,%v]", attempt, bd, busyBase/2, busyBase)
+		}
 	}
 }

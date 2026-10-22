@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,7 +116,7 @@ type dirCall struct {
 func New(cfg *config.Config) *Client {
 	c := &Client{
 		cfg:     cfg,
-		http:    &http.Client{Timeout: timeout},
+		http:    newHTTPClient(cfg.MaxWorkers),
 		panAPI:  envOr("BAIDU_PAN_API", "https://pan.baidu.com/rest/2.0/xpan/file"),
 		pcsAPI:  envOr("BAIDU_PCS_API", "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2"),
 		oauth:   envOr("BAIDU_OAUTH_API", "https://openapi.baidu.com/oauth/2.0/token"),
@@ -123,6 +125,20 @@ func New(cfg *config.Config) *Client {
 		pending: map[string]*dirCall{},
 	}
 	return c
+}
+
+// newHTTPClient keeps enough idle connections for the upload workers; the
+// default of two per host makes concurrent uploads pay for a new TLS handshake
+// on almost every request.
+func newHTTPClient(maxWorkers int) *http.Client {
+	if maxWorkers < 4 {
+		maxWorkers = 4
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = maxWorkers
+	tr.IdleConnTimeout = 90 * time.Second
+	return &http.Client{Timeout: timeout, Transport: tr}
 }
 
 func envOr(key, dflt string) string {
@@ -297,7 +313,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			if !sleepCtx(ctx, backoff(attempt)) {
+			if !sleepCtx(ctx, busyBackoff(attempt)) {
 				return nil, ctx.Err()
 			}
 			continue
@@ -578,22 +594,51 @@ func clip(b []byte, n int) string {
 }
 
 func retryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0
 	}
-	secs, err := time.ParseDuration(v + "s")
-	if err != nil {
-		return 0
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
 	}
-	return secs
+	// RFC 7231 also allows an HTTP-date.
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
+// backoff grows 1s/2s/4s... up to 30s, with jitter so concurrent workers do not
+// retry in lockstep.
 func backoff(attempt int) time.Duration {
 	d := time.Duration(1<<attempt) * time.Second
-	if d > 15*time.Second {
-		d = 15 * time.Second
+	if d > 30*time.Second {
+		d = 30 * time.Second
 	}
-	return d
+	return withJitter(d)
+}
+
+// busyBackoff is for 31034/31363: Baidu's throttle needs a longer window than a
+// transient network error, so 5s/10s/20s... up to 60s.
+func busyBackoff(attempt int) time.Duration {
+	d := time.Duration(5<<attempt) * time.Second
+	if d > 60*time.Second {
+		d = 60 * time.Second
+	}
+	return withJitter(d)
+}
+
+func withJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int63n(int64(half)+1))
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

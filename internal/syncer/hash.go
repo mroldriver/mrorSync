@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"mrorsync/internal/fsutil"
 )
@@ -90,13 +92,57 @@ func ReadBlockCache(stateDir, fileMD5 string, expectedSize int64) *BlockCache {
 	return &c
 }
 
-// WriteBlockCache atomically stores block md5s; failures are non-fatal.
+// WriteBlockCache atomically stores block md5s; failures are non-fatal. The
+// file is rebuildable, so it is written without fsync.
 func WriteBlockCache(stateDir, fileMD5 string, size int64, blocks []string) {
 	data, err := json.Marshal(BlockCache{V: 1, Size: size, Blocks: blocks})
 	if err != nil {
 		return
 	}
-	_ = fsutil.WriteFileAtomic(BlockCachePath(stateDir, fileMD5), data, 0o644)
+	_ = fsutil.WriteFileFast(BlockCachePath(stateDir, fileMD5), data, 0o644)
+}
+
+// PruneBlockCaches removes block-cache files that no manifest record references,
+// plus stale temp files. Files younger than minAge are kept so a concurrent or
+// interrupted write is never mistaken for garbage. Returns the number removed.
+func PruneBlockCaches(stateDir string, keep map[string]bool, minAge time.Duration) (int, error) {
+	dir := filepath.Join(stateDir, "blocks")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	now := time.Now()
+	removed := 0
+	for _, de := range ents {
+		if de.IsDir() {
+			continue
+		}
+		info, err := de.Info()
+		if err != nil {
+			continue
+		}
+		if minAge > 0 && now.Sub(info.ModTime()) < minAge {
+			continue
+		}
+		name := de.Name()
+		switch {
+		case strings.HasSuffix(name, ".json"):
+			if keep[strings.TrimSuffix(name, ".json")] {
+				continue
+			}
+		case strings.HasSuffix(name, ".tmp"):
+			// leftover from a crashed write
+		default:
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 // BlockCachePath returns .state/blocks/<md5>.json.

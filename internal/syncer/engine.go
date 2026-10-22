@@ -21,7 +21,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.1"
+var Version = "3.0.2"
 
 // Options are the CLI switches, shared with main.
 type Options struct {
@@ -329,6 +329,16 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 				e.mu.Unlock()
 				e.logf("远端已删除 %d 个文件", n)
 			}
+		}
+	}
+
+	// A clean run may have left block caches behind for files that were deleted
+	// or replaced; drop the unreferenced ones so .state does not grow forever.
+	if len(e.failures) == 0 && poolErr == nil {
+		if n, err := PruneBlockCaches(e.stateDir, e.man.MD5Set(), 24*time.Hour); err != nil {
+			e.logf("[警告] 清理分片缓存失败: %v", err)
+		} else if n > 0 {
+			e.logf("已清理 %d 个孤立分片缓存", n)
 		}
 	}
 

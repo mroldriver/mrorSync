@@ -52,7 +52,8 @@ build.ps1              找 Go 工具链并编译
 3. **配置容错**：`Config` 用 `raw` 保留未知字段，token 续期写回不能丢键；新增字段
    必须允许缺失（`Normalize` 补默认值），旧 config 要能直接跑。
 4. **原子写**：config、manifest、blocks 缓存、`last-run.json` 一律
-   `fsutil.WriteFileAtomic`；manifest 每 200 条 `Put` 落盘一次，退出前 `Flush`。
+   `fsutil.WriteFileAtomic`（缓存可用 `WriteFileFast`）；manifest 每 1000 条 `Put`
+   落盘一次，锁内只快照、锁外序列化写盘，退出前 `Flush`。
 5. **token 安全**：任何日志/错误都不能打印 access_token、refresh_token；`config.json`
    已在 `.gitignore`，不要提交，也不要放进测试夹具。
 6. **退出码契约**：`0` 全成功，`1` 有文件失败（下次重试），`2` 配置/参数错误，
@@ -60,8 +61,9 @@ build.ps1              找 Go 工具链并编译
 7. **删除保护**：仅当 `--only` 为空、未 `--no-delete`、扫描无目录错误时才删；待删除
    超过 `max(20, 清单*20%)` 且没有 `--force-delete` 时整体放弃删除；`--limit` 模式
    永不删远端。不要放宽这些条件。
-8. **重试语义**：网络错误/5xx 最多 4 次（1s/2s/4s）；`31034`/`31363` 重试；
-   HTTP 429 读 `Retry-After`；普通 4xx 不重试；`-6`/`110`/`111` 先 refresh 再
+8. **重试语义**：网络错误/5xx 最多 4 次（1s/2s/4s 起，带 jitter，上限 30s）；
+   `31034`/`31363` 走 5s 起、最长 60s 的独立退避；HTTP 429 读 `Retry-After`
+   （秒数或 HTTP-date）；普通 4xx 不重试；`-6`/`110`/`111` 先 refresh 再
    **重建请求**重发；并发 refresh 要互斥去重（refresh_token 是一次性的）。
 9. **并发**：文件级 `max_workers`（1–16），文件内分片 `part_workers`（1–8），全部
    用 `context`；Ctrl+C 要取消在途请求并落盘 manifest。
@@ -126,3 +128,4 @@ build.ps1              找 Go 工具链并编译
 
 - 2026-10-22：初版，对应 3.0.0。
 - 2026-10-22：3.0.1，补充单实例锁、认证短路、日志格式约定。
+- 2026-10-22：3.0.2，manifest 批量刷盘、缓存无 fsync + 清理、退避 jitter。

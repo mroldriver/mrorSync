@@ -9,6 +9,11 @@ import (
 	"mrorsync/internal/fsutil"
 )
 
+// flushEvery is how many Put calls may accumulate before the whole map is
+// rewritten. Larger batches cut the O(n²) total write volume; on a crash at most
+// this many records are lost, and those files are re-uploaded as 秒传 hits.
+const flushEvery = 1000
+
 // Record is one entry of .state/manifest.json.
 type Record struct {
 	Size    int64  `json:"size"`
@@ -26,6 +31,10 @@ type Manifest struct {
 	mu    sync.Mutex
 	m     map[string]Record
 	dirty int
+
+	// flushMu serialises writers so two goroutines never rename onto the same
+	// path at once; it is deliberately not held while records are being changed.
+	flushMu sync.Mutex
 }
 
 // LoadManifest reads the manifest, tolerating a missing file but failing loudly
@@ -56,14 +65,15 @@ func (m *Manifest) Get(rel string) (Record, bool) {
 	return rec, ok
 }
 
-// Put inserts/updates a record and flushes every 200 writes.
+// Put inserts/updates a record and flushes once a batch has accumulated.
 func (m *Manifest) Put(rel string, rec Record) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.m[rel] = rec
 	m.dirty++
-	if m.dirty >= 200 {
-		return m.flushLocked()
+	need := m.dirty >= flushEvery
+	m.mu.Unlock()
+	if need {
+		return m.flush()
 	}
 	return nil
 }
@@ -71,12 +81,12 @@ func (m *Manifest) Put(rel string, rec Record) error {
 // Drop removes records and flushes immediately.
 func (m *Manifest) Drop(rels []string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, r := range rels {
 		delete(m.m, r)
 	}
 	m.dirty++
-	return m.flushLocked()
+	m.mu.Unlock()
+	return m.flush()
 }
 
 // OKRels returns all rel paths whose last upload succeeded.
@@ -92,6 +102,19 @@ func (m *Manifest) OKRels() map[string]bool {
 	return out
 }
 
+// MD5Set returns every whole-file md5 referenced by the manifest.
+func (m *Manifest) MD5Set() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]bool, len(m.m))
+	for _, v := range m.m {
+		if v.MD5 != "" {
+			out[v.MD5] = true
+		}
+	}
+	return out
+}
+
 // Len returns the total number of records.
 func (m *Manifest) Len() int {
 	m.mu.Lock()
@@ -101,24 +124,46 @@ func (m *Manifest) Len() int {
 
 // Flush writes the manifest if it has pending changes.
 func (m *Manifest) Flush() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.flushLocked()
+	return m.flush()
 }
 
-func (m *Manifest) flushLocked() error {
+func (m *Manifest) flush() error {
+	m.flushMu.Lock()
+	defer m.flushMu.Unlock()
+
+	m.mu.Lock()
 	if m.dirty == 0 {
-		if _, err := os.Stat(m.file); err == nil {
+		_, statErr := os.Stat(m.file)
+		m.mu.Unlock()
+		if statErr == nil {
 			return nil
 		}
+		// No file yet: write an empty manifest so readers can rely on it.
+		return m.write(map[string]Record{})
 	}
-	data, err := json.Marshal(m.m)
+	// Snapshot under the lock, then serialise/write without blocking Put.
+	snap := make(map[string]Record, len(m.m))
+	for k, v := range m.m {
+		snap[k] = v
+	}
+	m.dirty = 0
+	m.mu.Unlock()
+
+	if err := m.write(snap); err != nil {
+		m.mu.Lock()
+		if m.dirty == 0 {
+			m.dirty = 1 // make the next Flush retry the write
+		}
+		m.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (m *Manifest) write(snap map[string]Record) error {
+	data, err := json.Marshal(snap)
 	if err != nil {
 		return err
 	}
-	if err := fsutil.WriteFileAtomic(m.file, data, 0o644); err != nil {
-		return err
-	}
-	m.dirty = 0
-	return nil
+	return fsutil.WriteFileAtomic(m.file, data, 0o644)
 }
