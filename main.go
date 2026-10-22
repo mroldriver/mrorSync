@@ -46,6 +46,13 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 	fs.BoolVar(&o.NoDelete, "no-delete", false, "不删除远端多余文件")
 	fs.BoolVar(&o.ForceDelete, "force-delete", false, "跳过删除比例保护")
 	fs.StringVar(&o.ConfigPath, "config", config.DefaultPath(), "配置文件路径")
+	fs.StringVar(&o.Root, "root", "", "一次性覆盖 config.root")
+	fs.StringVar(&o.RemoteBase, "remote-base", "", "一次性覆盖 config.remote_base")
+	fs.IntVar(&o.MaxWorkers, "max-workers", 0, "一次性覆盖 max_workers")
+	fs.IntVar(&o.PartWorkers, "part-workers", 0, "一次性覆盖 part_workers")
+	fs.StringVar(&o.StateDir, "state-dir", "", "一次性覆盖 state_dir")
+	fs.BoolVar(&o.PrintConfig, "print-config", false, "打印生效配置（密钥打码）后退出")
+	fs.BoolVar(&o.CheckConfig, "check-config", false, "只校验配置后退出")
 	fs.BoolVar(&version, "version", false, "打印版本")
 	fs.Usage = func() {} // --help is rendered by printHelp below
 
@@ -82,14 +89,30 @@ func printHelp(w io.Writer) {
   --only <子目录>     只处理某个子目录（相对 root）
   --limit <N>         本次最多上传 N 个文件（此模式不执行远端删除）
   --no-delete         不删除远端多余文件
-  --force-delete      跳过“删除超过 20%”保护
-  --config <路径>     指定配置文件，默认与 exe 同目录的 config.json
+  --force-delete      跳过“删除超过 N%”保护（N 见 tuning.delete_protect_percent）
+  --config <路径>     指定配置文件；默认 $MRORSYNC_CONFIG 或 exe 同目录 config.json
+  --root <路径>       一次性覆盖 config.root
+  --remote-base <路径> 一次性覆盖 config.remote_base
+  --max-workers <N>   一次性覆盖 max_workers
+  --part-workers <N>  一次性覆盖 part_workers
+  --state-dir <路径>  一次性覆盖 state_dir
+  --print-config      打印生效配置（token/secret 打码）后退出
+  --check-config      只校验配置并打印摘要，不扫描不联网
   --version           打印版本
   -h, --help          帮助
 
+优先级: 命令行 > MRORSYNC_* 环境变量 > config.json > 内置默认值
+
 环境变量:
-  BAIDU_PAN_API / BAIDU_PCS_API / BAIDU_OAUTH_API  覆盖接口地址
-  BAIDU_SYNC_STATE_DIR                             覆盖 .state 目录
+  MRORSYNC_CONFIG                                   指定配置文件路径
+  MRORSYNC_ROOT / MRORSYNC_REMOTE_BASE              覆盖对应配置
+  MRORSYNC_MAX_WORKERS / MRORSYNC_PART_WORKERS      并发数
+  MRORSYNC_STATE_DIR                                状态目录
+  MRORSYNC_EXCLUDES                                 逗号分隔的排除项
+  MRORSYNC_ACCESS_TOKEN / MRORSYNC_REFRESH_TOKEN    覆盖 token（CI 用）
+  MRORSYNC_RETRY_TRIES / MRORSYNC_HTTP_TIMEOUT_SECONDS 等 tuning 项
+  BAIDU_PAN_API / BAIDU_PCS_API / BAIDU_OAUTH_API   覆盖接口地址（兼容旧版）
+  BAIDU_SYNC_STATE_DIR                              旧版状态目录变量（兼容）
 `)
 }
 

@@ -105,17 +105,18 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 
 ## 配置项
 
-`config.json` 默认与 exe 同目录，可用 `--config` 指定。未知字段会原样保留（token 续期
-写回时不会丢配置）。路径支持 `D:/` 或 `D:\`。
+优先级：**命令行 > `MRORSYNC_*` 环境变量 > `config.json` > 内置默认值**。
+配置文件默认取 `$MRORSYNC_CONFIG`，否则 exe 同目录的 `config.json`，`--config` 可再次
+覆盖。未知字段会原样保留（token 续期写回时不会丢）。路径支持 `D:/` 或 `D:\`。
+`config_version` 当前为 1；未来不兼容的格式会因为版本号被拒绝，而不是被误读。
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
+| `config_version` | int | `1` | 配置格式版本；旧文件缺省按 1 处理 |
 | `root` | string | `D:\` | 要备份的本地根目录 |
 | `remote_base` | string | `/备份/D盘` | 远端根路径；`/` 表示直接放网盘根（模板示例即 `/`） |
-| `app_id` | string | 空 | 应用 ID，`login` 用；同步不用 |
 | `app_key` | string | 空 | 应用的 API Key（即 client_id） |
 | `secret_key` | string | 空 | 应用的 Secret Key |
-| `sign_key` | string | 空 | 预留：秒传签名，目前未使用 |
 | `access_token` | string | 空 | 授权后由 `login` 写入 |
 | `refresh_token` | string | 空 | 同上，用于自动续期 |
 | `max_workers` | int | `2` | 同时上传的文件数，范围 1–16；>3 会提示限流风险 |
@@ -123,6 +124,25 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 | `max_file_size` | int | `4294967296` | 单文件上限（字节），默认 4 GB |
 | `state_dir` | string | `<exe>/.state` | 状态目录；也可用环境变量覆盖 |
 | `excludes` | string[] | 见下 | 扫描时跳过的目录/文件名 |
+| `tuning` | object | 见下 | 运维调参，可选；不写就用默认值 |
+
+`app_id`、`sign_key` 仍会被保留以免旧配置报错，但当前版本不使用。
+
+### tuning（可选）
+
+旧配置不写这一段也能直接运行；越界值会被夹取并在启动时打印 `[警告]`，不再静默修改。
+
+| 字段 | 默认 | 范围 | 说明 |
+|---|---|---|---|
+| `retry_tries` | `5` | 1–10 | 单次请求最多尝试次数 |
+| `backoff_max_seconds` | `8` | 1–300 | 普通重试退避上限 |
+| `busy_backoff_max_seconds` | `40` | 1–600 | 31034/31363 限流退避上限 |
+| `http_timeout_seconds` | `180` | 5–3600 | 单次 HTTP 请求超时 |
+| `delete_protect_percent` | `20` | 1–100 | 待删除超过清单该比例时中止删除 |
+| `delete_protect_min` | `20` | 0–1000000 | 比例保护的绝对下限（个数） |
+| `lock_stale_hours` | `24` | 1–720 | 运行锁视为残留的小时数 |
+| `cache_gc_hours` | `24` | 1–8760 | 只清理超过该年龄的孤立分片缓存 |
+| `verify_progress_every` | `2000` | 0–1000000 | `--verify` 进度日志间隔；0 关闭 |
 
 未配置 `excludes` 时代码内置：`$RECYCLE.BIN`、`System Volume Information`、
 `node_modules`、`.git`、`.state`；`config.example.json` 模板额外包含 `pagefile.sys`、
@@ -131,14 +151,21 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 匹配规则：按**文件名**（不是完整路径）匹配，大小写不敏感，支持 `*` 通配
 （如 `*.class`、`*.tmp`）；不支持 `dir/**` 这类路径通配。
 
-环境变量（测试/私有部署用）：
+### 环境变量
 
 | 变量 | 作用 |
 |---|---|
-| `BAIDU_PAN_API` | 覆盖网盘 API 基地址 |
-| `BAIDU_PCS_API` | 覆盖上传 API 基地址 |
-| `BAIDU_OAUTH_API` | 覆盖 OAuth token 地址 |
-| `BAIDU_SYNC_STATE_DIR` | 覆盖状态目录（优先级：`state_dir` > 环境变量 > `.state`） |
+| `MRORSYNC_CONFIG` | 配置文件路径 |
+| `MRORSYNC_ROOT` / `MRORSYNC_REMOTE_BASE` | 覆盖 `root` / `remote_base` |
+| `MRORSYNC_MAX_WORKERS` / `MRORSYNC_PART_WORKERS` | 覆盖并发数 |
+| `MRORSYNC_MAX_FILE_SIZE` | 覆盖单文件上限（字节） |
+| `MRORSYNC_STATE_DIR` | 状态目录；优先级低于 `state_dir` |
+| `MRORSYNC_EXCLUDES` | 逗号/分号分隔的排除项 |
+| `MRORSYNC_APP_KEY` / `MRORSYNC_SECRET_KEY` | 覆盖应用凭证 |
+| `MRORSYNC_ACCESS_TOKEN` / `MRORSYNC_REFRESH_TOKEN` | 覆盖 token（适合 CI，注意环境安全） |
+| `MRORSYNC_RETRY_TRIES` 等 | 覆盖对应 `tuning` 字段（变量名为 `MRORSYNC_` + 字段名大写） |
+| `BAIDU_PAN_API` / `BAIDU_PCS_API` / `BAIDU_OAUTH_API` | 覆盖接口地址（兼容旧版） |
+| `BAIDU_SYNC_STATE_DIR` | 旧版状态目录变量（兼容） |
 
 ## 命令行
 
@@ -155,9 +182,16 @@ mrorsync.exe login [--config 路径]
 | `--only <子目录>` | 只处理某个子目录（相对 root，大小写不敏感） |
 | `--limit <N>` | 本次最多上传 N 个文件；**此模式不执行远端删除** |
 | `--no-delete` | 不删除远端多余文件 |
-| `--force-delete` | 跳过“删除超过 20%”保护 |
-| `--config <路径>` | 配置文件路径，默认 exe 同目录 `config.json` |
-| `--version` | 打印版本号 |
+| `--force-delete` | 跳过“删除超过 N%”保护（N 见 `tuning.delete_protect_percent`） |
+| `--config <路径>` | 配置文件路径，默认 `$MRORSYNC_CONFIG` 或 exe 同目录 `config.json` |
+| `--root <路径>` | 一次性覆盖 `root`（配合计划任务/临时目录） |
+| `--remote-base <路径>` | 一次性覆盖 `remote_base` |
+| `--max-workers <N>` | 一次性覆盖 `max_workers` |
+| `--part-workers <N>` | 一次性覆盖 `part_workers` |
+| `--state-dir <路径>` | 一次性覆盖 `state_dir` |
+| `--print-config` | 打印生效配置（token/secret 打码）后退出，便于排查 |
+| `--check-config` | 只校验配置并打印摘要，不扫描、不联网 |
+| `--version` | 打印版本号（含构建提交） |
 | `-h`, `--help` | 帮助 |
 
 组合规则（代码里显式校验，不会静默）：
@@ -368,6 +402,15 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.6
+
+- 配置标准化：`config_version`、可选 `tuning` 段（重试/退避/超时/删除保护/锁与缓存年龄等），
+  旧配置不写也能用
+- 优先级统一为「命令行 > `MRORSYNC_*` 环境变量 > `config.json` > 默认值」，新增
+  `--root`/`--remote-base`/`--max-workers`/`--part-workers`/`--state-dir` 一次性覆盖
+- 新增 `--print-config`（密钥打码）、`--check-config`（只校验不扫描）
+- 越界配置不再静默夹取，改为打印 `[警告]`；`config_version` 过高会直接报错
 
 ### 3.0.5
 

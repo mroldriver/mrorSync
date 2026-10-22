@@ -61,8 +61,8 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 6. **退出码契约**：`0` 全成功，`1` 有文件失败（下次重试），`2` 配置/参数错误，
    `130` Ctrl+C。改行为要同步 README。
 7. **删除保护**：仅当 `--only` 为空、未 `--no-delete`、扫描无目录错误时才删；待删除
-   超过 `max(20, 清单*20%)` 且没有 `--force-delete` 时整体放弃删除；`--limit` 模式
-   永不删远端。不要放宽这些条件。
+   超过 `max(tuning.delete_protect_min, 清单*tuning.delete_protect_percent%)` 且没有
+   `--force-delete` 时整体放弃删除；`--limit` 模式永不删远端。不要放宽这些条件。
 8. **重试语义**：网络错误/5xx 最多 5 次（1s/2s/4s/8s 起，带 jitter，上限 8s）；
    `31034`/`31363` 走 5s/10s/20s/40s 的独立退避（上限 40s）；HTTP 429 读 `Retry-After`
    （秒数或 HTTP-date）；普通 4xx 不重试；`-6`/`110`/`111` 先 refresh 再
@@ -72,11 +72,15 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 10. **分片规则**：固定 4 MB，末片按实际大小；单文件最多 1024 片；超过
     `max_file_size`（默认 4 GB）打印 `[skip]` 跳过。
 11. **单实例锁**：`Run` 必须在 state 目录持有 `.state/run.lock`，并在所有返回路径释放；
-    新增提前返回的分支不要绕过 `defer lock.Release()`。锁超过 24h 视为残留可接管。
+    新增提前返回的分支不要绕过 `defer lock.Release()`。锁超过
+    `tuning.lock_stale_hours`（默认 24h）视为残留可接管。
 12. **认证错误短路**：`baidu.IsAuthError`（-6/110/111、401/403）必须终止整轮并跳过删除，
     不能降级成“每个文件失败一次”；文件级错误（如 31066）仍只记单个失败。
 13. **日志**：所有输出走 `logf`（带时间戳、加锁）；不要在业务代码里直接写 stdout，
     也不要按字节截断错误响应文本。
+14. **配置分层**：优先级固定为「CLI > `MRORSYNC_*` 环境变量 > `config.json` > 默认值」。
+    新增配置字段必须给默认值、允许旧文件缺失，并同步 `Normalize`/`applyEnv`/README；
+    运维阈值放 `tuning`，不要再把数字写死在代码里。
 
 ## 测试要求
 
@@ -115,7 +119,8 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
   `EmptyMD5` 当作唯一分片。
 - 同一远端目录只 `create` 一次，并发请求按路径去重等待，不要改成重复创建。
 - 扫描跳过符号链接/junction，防止链接环卡死。
-- 状态目录优先级：`config.state_dir` > `BAIDU_SYNC_STATE_DIR` > `<exe>/.state`。
+- 状态目录优先级：`config.state_dir` > `MRORSYNC_STATE_DIR` > `BAIDU_SYNC_STATE_DIR`
+  > `<exe>/.state`。
 - `--verify` 必须配合 `--apply`，`Options.Validate` 会拒绝单独使用。
 
 ## 改完自检
@@ -135,3 +140,4 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - 2026-10-22：3.0.3，删除计数、panic 兜底、实传统计、重试上限。
 - 2026-10-22：3.0.4，版本注入提交号、ci.ps1、拆分 upload.go、清理死代码。
 - 2026-10-22：3.0.5，测试按场景拆分、--limit 日志顺序、OKRels 单次遍历。
+- 2026-10-22：3.0.6，配置版本/tuning/环境变量/CLI 覆盖、print-config/check-config。

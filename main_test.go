@@ -607,6 +607,79 @@ func TestLastRunRecordsStats(t *testing.T) {
 	}
 }
 
+func TestCheckConfig(t *testing.T) {
+	e := setup(t)
+	code, out := e.run("--check-config", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("--check-config exit=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "配置 OK") || !strings.Contains(out, "workers=2/2") {
+		t.Fatalf("unexpected --check-config output:\n%s", out)
+	}
+}
+
+func TestPrintConfigMasksSecrets(t *testing.T) {
+	e := setup(t)
+	code, out := e.run("--print-config", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("--print-config exit=%d\n%s", code, out)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("--print-config is not valid JSON: %v\n%s", err, out)
+	}
+	for _, key := range []string{"secret_key", "access_token", "refresh_token"} {
+		if cfg[key] != "******" {
+			t.Fatalf("%s=%v, want masked", key, cfg[key])
+		}
+	}
+	if _, ok := cfg["tuning"]; !ok {
+		t.Fatal("effective config should include tuning")
+	}
+	if cfg["config_version"] != float64(1) {
+		t.Fatalf("config_version=%v", cfg["config_version"])
+	}
+}
+
+func TestPrintConfigStaysValidJSONWhenClamped(t *testing.T) {
+	e := setup(t)
+	data, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["max_workers"] = 99
+	data, _ = json.MarshalIndent(raw, "", "  ")
+	mustWrite(t, e.cfgPath, data)
+
+	code, out := e.run("--print-config", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("--print-config exit=%d\n%s", code, out)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("warnings corrupted the JSON output: %v\n%s", err, out)
+	}
+	if cfg["max_workers"] != float64(16) {
+		t.Fatalf("max_workers=%v, want clamped 16", cfg["max_workers"])
+	}
+}
+
+func TestEnvOverrideWorkers(t *testing.T) {
+	e := setup(t)
+	t.Setenv("MRORSYNC_MAX_WORKERS", "1")
+	code, out := e.run("--check-config", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("exit=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "workers=1/2") {
+		t.Fatalf("env override not applied:\n%s", out)
+	}
+}
+
 func TestCreateAlreadyExistsIsSuccess(t *testing.T) {
 	e := setup(t)
 	e.mock.mu.Lock()

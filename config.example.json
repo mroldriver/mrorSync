@@ -1,15 +1,25 @@
 {
+  "config_version": 1,
   "root": "D:/",
   "remote_base": "/",
-  "app_id": "",
   "app_key": "",
   "secret_key": "",
-  "sign_key": "",
   "access_token": "",
   "refresh_token": "",
   "max_workers": 2,
   "part_workers": 2,
   "max_file_size": 4294967296,
+  "tuning": {
+    "retry_tries": 5,
+    "backoff_max_seconds": 8,
+    "busy_backoff_max_seconds": 40,
+    "http_timeout_seconds": 180,
+    "delete_protect_percent": 20,
+    "delete_protect_min": 20,
+    "lock_stale_hours": 24,
+    "cache_gc_hours": 24,
+    "verify_progress_every": 2000
+  },
   "excludes": [
     "$RECYCLE.BIN",
     "System Volume Information",

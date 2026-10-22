@@ -114,9 +114,13 @@ type dirCall struct {
 
 // New builds a client; API endpoints can be overridden with env vars (tests).
 func New(cfg *config.Config) *Client {
+	timeout := time.Duration(cfg.Tuning.HTTPTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 180 * time.Second
+	}
 	c := &Client{
 		cfg:     cfg,
-		http:    newHTTPClient(cfg.MaxWorkers),
+		http:    newHTTPClient(cfg.MaxWorkers, timeout),
 		panAPI:  envOr("BAIDU_PAN_API", "https://pan.baidu.com/rest/2.0/xpan/file"),
 		pcsAPI:  envOr("BAIDU_PCS_API", "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2"),
 		oauth:   envOr("BAIDU_OAUTH_API", "https://openapi.baidu.com/oauth/2.0/token"),
@@ -130,7 +134,7 @@ func New(cfg *config.Config) *Client {
 // newHTTPClient keeps enough idle connections for the upload workers; the
 // default of two per host makes concurrent uploads pay for a new TLS handshake
 // on almost every request.
-func newHTTPClient(maxWorkers int) *http.Client {
+func newHTTPClient(maxWorkers int, timeout time.Duration) *http.Client {
 	if maxWorkers < 4 {
 		maxWorkers = 4
 	}
@@ -225,7 +229,12 @@ func (c *Client) refresh(ctx context.Context, oldToken string) bool {
 // refresh changes the request body, so the request must be recreated.
 func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Request, error), op string) (map[string]any, error) {
 	var lastErr error
-	const tries = 5
+	tries := c.cfg.Tuning.RetryTries
+	if tries < 1 {
+		tries = 5
+	}
+	backoffMax := time.Duration(c.cfg.Tuning.BackoffMaxSeconds) * time.Second
+	busyMax := time.Duration(c.cfg.Tuning.BusyBackoffMaxSeconds) * time.Second
 	for attempt := 0; attempt < tries; attempt++ {
 		req, err := build(ctx)
 		if err != nil {
@@ -239,7 +248,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			if !sleepCtx(ctx, backoff(attempt)) {
+			if !sleepCtx(ctx, backoff(attempt, backoffMax)) {
 				return nil, ctx.Err()
 			}
 			continue
@@ -251,7 +260,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			if !sleepCtx(ctx, backoff(attempt)) {
+			if !sleepCtx(ctx, backoff(attempt, backoffMax)) {
 				return nil, ctx.Err()
 			}
 			continue
@@ -271,7 +280,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			wait := backoff(attempt)
+			wait := backoff(attempt, backoffMax)
 			if he.RetryAfter > 0 {
 				wait = min(he.RetryAfter, time.Minute)
 			}
@@ -287,7 +296,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			if !sleepCtx(ctx, backoff(attempt)) {
+			if !sleepCtx(ctx, backoff(attempt, backoffMax)) {
 				return nil, ctx.Err()
 			}
 			continue
@@ -313,7 +322,7 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			if attempt == tries-1 {
 				break
 			}
-			if !sleepCtx(ctx, busyBackoff(attempt)) {
+			if !sleepCtx(ctx, busyBackoff(attempt, busyMax)) {
 				return nil, ctx.Err()
 			}
 			continue
@@ -621,22 +630,22 @@ func retryAfter(v string) time.Duration {
 	return 0
 }
 
-// backoff grows 1s/2s/4s/8s with jitter and a 8s cap, so concurrent workers do
-// not retry in lockstep.
-func backoff(attempt int) time.Duration {
+// backoff grows 1s/2s/4s... with jitter, capped by max (from tuning); the cap
+// keeps concurrent workers from retrying in lockstep.
+func backoff(attempt int, max time.Duration) time.Duration {
 	d := time.Duration(1<<attempt) * time.Second
-	if d > 8*time.Second {
-		d = 8 * time.Second
+	if max > 0 && d > max {
+		d = max
 	}
 	return withJitter(d)
 }
 
 // busyBackoff is for 31034/31363: Baidu's throttle needs a longer window than a
-// transient network error, so 5s/10s/20s/40s with a 40s cap.
-func busyBackoff(attempt int) time.Duration {
+// transient network error, so 5s/10s/20s... up to max.
+func busyBackoff(attempt int, max time.Duration) time.Duration {
 	d := time.Duration(5<<attempt) * time.Second
-	if d > 40*time.Second {
-		d = 40 * time.Second
+	if max > 0 && d > max {
+		d = max
 	}
 	return withJitter(d)
 }

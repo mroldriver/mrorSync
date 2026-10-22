@@ -72,21 +72,23 @@ func TestRetryAfter(t *testing.T) {
 }
 
 func TestBackoffBoundsAndJitter(t *testing.T) {
+	backoffMax := 8 * time.Second
+	busyMax := 40 * time.Second
 	for attempt := 0; attempt < 7; attempt++ {
 		base := time.Duration(1<<attempt) * time.Second
-		if base > 8*time.Second {
-			base = 8 * time.Second
+		if base > backoffMax {
+			base = backoffMax
 		}
-		d := backoff(attempt)
+		d := backoff(attempt, backoffMax)
 		if d < base/2 || d > base {
 			t.Fatalf("backoff(%d)=%v, want within [%v,%v]", attempt, d, base/2, base)
 		}
 
 		busyBase := time.Duration(5<<attempt) * time.Second
-		if busyBase > 40*time.Second {
-			busyBase = 40 * time.Second
+		if busyBase > busyMax {
+			busyBase = busyMax
 		}
-		bd := busyBackoff(attempt)
+		bd := busyBackoff(attempt, busyMax)
 		if bd < busyBase/2 || bd > busyBase {
 			t.Fatalf("busyBackoff(%d)=%v, want within [%v,%v]", attempt, bd, busyBase/2, busyBase)
 		}

@@ -20,7 +20,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.5"
+var Version = "3.0.6"
 
 // BuildCommit is injected by build.ps1 (-ldflags -X) so --version can be tied to
 // a specific commit; it stays empty for plain `go build`.
@@ -37,6 +37,16 @@ type Options struct {
 	Limit       int
 	ConfigPath  string
 	Out         io.Writer
+
+	// One-shot overrides; empty/zero means "use config file / environment".
+	Root        string
+	RemoteBase  string
+	MaxWorkers  int
+	PartWorkers int
+	StateDir    string
+
+	PrintConfig bool
+	CheckConfig bool
 }
 
 // Validate rejects combinations that would surprise the user.
@@ -103,9 +113,45 @@ func Run(ctx context.Context, opts Options) int {
 		logf("%v", err)
 		return 2
 	}
+	// Precedence: CLI > environment (applied by Load) > file > defaults.
+	if opts.Root != "" {
+		cfg.Root = opts.Root
+	}
+	if opts.RemoteBase != "" {
+		cfg.RemoteBase = opts.RemoteBase
+	}
+	if opts.MaxWorkers != 0 {
+		cfg.MaxWorkers = opts.MaxWorkers
+	}
+	if opts.PartWorkers != 0 {
+		cfg.PartWorkers = opts.PartWorkers
+	}
+	if opts.StateDir != "" {
+		cfg.StateDir = opts.StateDir
+	}
 	if err := cfg.Normalize(); err != nil {
 		logf("%v", err)
 		return 2
+	}
+	// Print the effective config as pure JSON: warnings would corrupt the output
+	// for callers doing `--print-config | jq`.
+	if opts.PrintConfig {
+		data, err := json.MarshalIndent(cfg.Masked(), "", "  ")
+		if err != nil {
+			logf("无法序列化配置: %v", err)
+			return 2
+		}
+		fmt.Fprintln(opts.Out, string(data))
+		return 0
+	}
+	for _, w := range cfg.Warnings {
+		logf("[警告] %s", w)
+	}
+	if opts.CheckConfig {
+		logf("配置 OK: root=%s remote_base=%s workers=%d/%d max_file_size=%s state_dir=%s excludes=%d",
+			cfg.Root, cfg.RemoteBase, cfg.MaxWorkers, cfg.PartWorkers,
+			HumanBytes(cfg.MaxFileSize), cfg.EffectiveStateDir(), len(cfg.Excludes))
+		return 0
 	}
 	if opts.Apply && cfg.AccessToken == "" && cfg.RefreshToken == "" {
 		logf("access_token 和 refresh_token 都是空的，先运行 mrorsync.exe login 完成授权")
@@ -115,14 +161,7 @@ func Run(ctx context.Context, opts Options) int {
 		logf("[提示] max_workers=%d 偏大，容易被限流(31034)，建议 ≤3", cfg.MaxWorkers)
 	}
 
-	stateDir := cfg.StateDir
-	if stateDir == "" {
-		if env := strings.TrimSpace(os.Getenv("BAIDU_SYNC_STATE_DIR")); env != "" {
-			stateDir = env
-		} else {
-			stateDir = filepath.Join(config.ExeDir(), ".state")
-		}
-	}
+	stateDir := cfg.EffectiveStateDir()
 	stateDir, err = filepath.Abs(stateDir)
 	if err != nil {
 		logf("state 目录无效: %v", err)
@@ -133,7 +172,8 @@ func Run(ctx context.Context, opts Options) int {
 		return 2
 	}
 
-	lock, err := fsutil.AcquireLock(filepath.Join(stateDir, "run.lock"), 24*time.Hour)
+	lockStale := time.Duration(cfg.Tuning.LockStaleHours) * time.Hour
+	lock, err := fsutil.AcquireLock(filepath.Join(stateDir, "run.lock"), lockStale)
 	if err != nil {
 		var le *fsutil.LockedError
 		if errors.As(err, &le) {
@@ -215,8 +255,11 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		sort.Strings(gone)
 	}
 	knownCount := len(okRels)
-	if len(gone) > max(20, knownCount*20/100) && !e.opts.ForceDelete {
-		logf("[保护] 待删除 %d 个 / 清单共 %d 个, 超过 20%% 阈值, 本次不删", len(gone), knownCount)
+	protectPct := e.cfg.Tuning.DeleteProtectPercent
+	protectMin := e.cfg.Tuning.DeleteProtectMin
+	if len(gone) > max(protectMin, knownCount*protectPct/100) && !e.opts.ForceDelete {
+		logf("[保护] 待删除 %d 个 / 清单共 %d 个, 超过 %d%% 阈值(下限 %d), 本次不删",
+			len(gone), knownCount, protectPct, protectMin)
 		logf("[保护] 确认这些文件是真删了, 再加 --force-delete 重跑")
 		gone = nil
 	}
@@ -299,7 +342,7 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 			e.st.checked++
 			checked := e.st.checked
 			e.mu.Unlock()
-			if checked%2000 == 0 {
+			if every := int64(e.cfg.Tuning.VerifyProgressEvery); every > 0 && checked%every == 0 {
 				e.logf("校验进度 %d ...", checked)
 			}
 			return nil
@@ -354,7 +397,8 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 	// A clean run may have left block caches behind for files that were deleted
 	// or replaced; drop the unreferenced ones so .state does not grow forever.
 	if len(e.failures) == 0 && poolErr == nil {
-		if n, err := PruneBlockCaches(e.stateDir, e.man.MD5Set(), 24*time.Hour); err != nil {
+		age := time.Duration(e.cfg.Tuning.CacheGCHours) * time.Hour
+		if n, err := PruneBlockCaches(e.stateDir, e.man.MD5Set(), age); err != nil {
 			e.logf("[警告] 清理分片缓存失败: %v", err)
 		} else if n > 0 {
 			e.logf("已清理 %d 个孤立分片缓存", n)
