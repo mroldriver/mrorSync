@@ -21,7 +21,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.0"
+var Version = "3.0.1"
 
 // Options are the CLI switches, shared with main.
 type Options struct {
@@ -63,6 +63,7 @@ type Engine struct {
 	cfg      *config.Config
 	opts     Options
 	out      io.Writer
+	log      func(format string, args ...any)
 	stateDir string
 	man      *Manifest
 	cli      *baidu.Client
@@ -78,8 +79,15 @@ func Run(ctx context.Context, opts Options) int {
 	if opts.Out == nil {
 		opts.Out = os.Stdout
 	}
+	// logf is shared by the engine and the HTTP client; the mutex keeps lines
+	// from interleaving when workers log concurrently, and every line carries a
+	// timestamp so scheduled-task logs can be correlated.
+	var logMu sync.Mutex
 	logf := func(format string, args ...any) {
-		fmt.Fprintf(opts.Out, format+"\n", args...)
+		line := fmt.Sprintf(format, args...)
+		logMu.Lock()
+		fmt.Fprintf(opts.Out, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), line)
+		logMu.Unlock()
 	}
 
 	if err := opts.Validate(); err != nil {
@@ -121,6 +129,18 @@ func Run(ctx context.Context, opts Options) int {
 		return 2
 	}
 
+	lock, err := fsutil.AcquireLock(filepath.Join(stateDir, "run.lock"), 24*time.Hour)
+	if err != nil {
+		var le *fsutil.LockedError
+		if errors.As(err, &le) {
+			logf("已有实例在运行（PID %d，开始于 %s），本次退出", le.Info.PID, le.Info.Started)
+		} else {
+			logf("无法创建运行锁: %v", err)
+		}
+		return 2
+	}
+	defer func() { _ = lock.Release() }()
+
 	man, err := LoadManifest(filepath.Join(stateDir, "manifest.json"))
 	if err != nil {
 		logf("%v", err)
@@ -131,11 +151,15 @@ func Run(ctx context.Context, opts Options) int {
 	cli := baidu.New(cfg)
 	cli.Logf = logf
 
-	e := &Engine{cfg: cfg, opts: opts, out: opts.Out, stateDir: stateDir, man: man, cli: cli}
+	e := &Engine{cfg: cfg, opts: opts, out: opts.Out, log: logf, stateDir: stateDir, man: man, cli: cli}
 	return e.run(ctx, logf)
 }
 
 func (e *Engine) logf(format string, args ...any) {
+	if e.log != nil {
+		e.log(format, args...)
+		return
+	}
 	fmt.Fprintf(e.out, format+"\n", args...)
 }
 
@@ -232,6 +256,10 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 			}
 			e.addFailure(item.entry.Rel, err)
 			e.logf("[%d/%d] 失败 %s: %v", n, len(todo), item.entry.Rel, err)
+			if baidu.IsAuthError(err) {
+				e.logf("[终止] 认证失败，本轮立即停止；请先运行 mrorsync.exe login 再重试")
+				return err
+			}
 			return nil
 		}
 		rec := Record{
@@ -279,24 +307,28 @@ func (e *Engine) run(ctx context.Context, logf func(string, ...any)) int {
 		return 130
 	}
 	if poolErr != nil {
-		e.logf("上传中断: %v", poolErr)
+		e.logf("本轮已终止: %v", poolErr)
 	}
 
 	if len(gone) > 0 {
-		paths := make([]string, len(gone))
-		for i, rel := range gone {
-			paths[i] = remoteFor(cfg, rel)
-		}
-		n, err := e.cli.Delete(ctx, paths)
-		if err != nil {
-			e.logf("删除失败: %v", err)
-		} else if err := e.man.Drop(gone); err != nil {
-			e.logf("删除已完成，但 manifest 落盘失败: %v", err)
+		if poolErr != nil {
+			e.logf("[跳过] 本轮异常终止，未执行远端删除 %d 个", len(gone))
 		} else {
-			e.mu.Lock()
-			e.st.deleted = int64(n)
-			e.mu.Unlock()
-			e.logf("远端已删除 %d 个文件", n)
+			paths := make([]string, len(gone))
+			for i, rel := range gone {
+				paths[i] = remoteFor(cfg, rel)
+			}
+			n, err := e.cli.Delete(ctx, paths)
+			if err != nil {
+				e.logf("删除失败: %v", err)
+			} else if err := e.man.Drop(gone); err != nil {
+				e.logf("删除已完成，但 manifest 落盘失败: %v", err)
+			} else {
+				e.mu.Lock()
+				e.st.deleted = int64(n)
+				e.mu.Unlock()
+				e.logf("远端已删除 %d 个文件", n)
+			}
 		}
 	}
 

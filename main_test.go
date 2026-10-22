@@ -47,6 +47,7 @@ type mockState struct {
 	refreshes    int
 	busy         int
 	seq          int
+	createExists bool
 }
 
 func newMockState() *mockState {
@@ -160,6 +161,13 @@ func (s *mockState) create(w http.ResponseWriter, r *http.Request) {
 	uploadID := r.PostForm.Get("uploadid")
 	if _, ok := s.uploads[uploadID]; !ok {
 		writeJSON(w, map[string]any{"errno": 31066, "request_id": "bad-uploadid"})
+		return
+	}
+	if s.createExists {
+		// Simulate the first create succeeding server-side but its response
+		// being lost, so the retry sees "already exists".
+		s.createExists = false
+		writeJSON(w, map[string]any{"errno": 31039, "request_id": "exists"})
 		return
 	}
 	var size int64
@@ -519,6 +527,69 @@ func TestSyncFlow(t *testing.T) {
 	}
 	if last.Failed != 0 {
 		t.Fatalf("last-run failed=%d", last.Failed)
+	}
+}
+
+func TestCreateAlreadyExistsIsSuccess(t *testing.T) {
+	e := setup(t)
+	e.mock.mu.Lock()
+	e.mock.createExists = true
+	e.mock.mu.Unlock()
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("create-already-exists exit=%d\n%s", code, out)
+	}
+	if !strings.Contains(out, "已存在") {
+		t.Fatalf("expected an already-exists hint, got:\n%s", out)
+	}
+	man := e.manifest()
+	if len(man) != 5 {
+		t.Fatalf("want 5 manifest entries, got %d", len(man))
+	}
+	for rel, rec := range man {
+		if rec.State != "ok" {
+			t.Fatalf("%s state=%q, want ok", rel, rec.State)
+		}
+	}
+	// The lock must be gone once the run returns.
+	if _, err := os.Stat(filepath.Join(e.stateDir, "run.lock")); !os.IsNotExist(err) {
+		t.Fatalf("run.lock left behind: %v", err)
+	}
+}
+
+func TestAuthFailureStopsRun(t *testing.T) {
+	e := setup(t)
+
+	data, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg["access_token"] = "bad"
+	cfg["refresh_token"] = "bad"
+	data, _ = json.MarshalIndent(cfg, "", "  ")
+	mustWrite(t, e.cfgPath, data)
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
+	if code != 1 {
+		t.Fatalf("auth failure exit=%d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "认证失败") {
+		t.Fatalf("expected auth failure message:\n%s", out)
+	}
+	e.mock.mu.Lock()
+	precreates := e.mock.precreates
+	creates := len(e.mock.creates)
+	e.mock.mu.Unlock()
+	if precreates >= 5 {
+		t.Fatalf("auth failure did not stop the run: precreate=%d", precreates)
+	}
+	if creates != 0 {
+		t.Fatalf("auth failure still created %d files", creates)
 	}
 }
 

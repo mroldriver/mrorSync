@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"mrorsync/internal/config"
 )
@@ -465,6 +466,15 @@ func (c *Client) Create(ctx context.Context, remote string, size int64, uploadID
 		"block_list": {string(blockJSON)},
 	})
 	if err != nil {
+		// create is not idempotent: if the first attempt succeeded but its
+		// response was lost, the retry reports "already exists". Treating that
+		// as a failure would mark an uploaded file as failed; the path already
+		// holds our content (rtype=3 overwrites).
+		var ae *APIError
+		if errors.As(err, &ae) && (ae.Errno == 31039 || ae.Errno == 31061) {
+			c.Logf("[提示] create 返回文件已存在，按成功处理: %s", remote)
+			return 0, nil
+		}
 		return 0, err
 	}
 	return num(m["fs_id"]), nil
@@ -555,8 +565,14 @@ func md5Hex(b []byte) string {
 
 func clip(b []byte, n int) string {
 	s := string(b)
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	// Do not cut a multi-byte rune in half: trim invalid trailing bytes so the
+	// log line stays valid UTF-8.
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
 	}
 	return s
 }
@@ -613,6 +629,21 @@ func IsFatal(err error) bool {
 	var he *HTTPError
 	if errors.As(err, &he) {
 		return he.Status >= 400 && he.Status < 500 && he.Status != 408 && he.Status != 429
+	}
+	return false
+}
+
+// IsAuthError reports whether err means the access token is no longer usable and
+// the whole run must stop until the user authorizes again. Unlike IsFatal this
+// is about the run, not one file: a bad filename (31066) is file-level.
+func IsAuthError(err error) bool {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Errno == -6 || ae.Errno == 110 || ae.Errno == 111
+	}
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden
 	}
 	return false
 }
