@@ -24,7 +24,15 @@ Write-Host "使用 Go: $go"
 
 Push-Location $PSScriptRoot
 try {
-    & $go build -trimpath -ldflags '-s -w' -o mrorsync.exe .
+    $commit = ''
+    if (Test-Path (Join-Path $PSScriptRoot '.git')) {
+        $commit = (& git -C $PSScriptRoot rev-parse --short HEAD 2>$null)
+    }
+    $ldflags = '-s -w'
+    if ($commit) {
+        $ldflags += " -X mrorsync/internal/syncer.BuildCommit=$commit"
+    }
+    & $go build -trimpath -ldflags $ldflags -o mrorsync.exe .
     if ($LASTEXITCODE -ne 0) { throw "go build 失败 (exit $LASTEXITCODE)" }
     $exe = Join-Path $PSScriptRoot 'mrorsync.exe'
     $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)

@@ -27,6 +27,7 @@
 | 测试 | `go test ./...` |
 | 格式化 | `go fmt ./...` |
 | 静态检查 | `go vet ./...` |
+| 全部检查 | `.\ci.ps1 -Build` |
 | 只扫描不联网 | `.\mrorsync.exe` |
 | 版本 | `.\mrorsync.exe --version` |
 
@@ -36,10 +37,11 @@
 main.go                CLI 解析、login 子命令、退出码
 internal/config        config.json 读写、默认值、校验、原子保存（保留未知字段）
 internal/baidu         xpan API：重试、token 续期、目录缓存、分片上传、删除
-internal/fsutil        WriteFileAtomic（临时文件 + rename）
+internal/fsutil        WriteFileAtomic / WriteFileFast、运行锁
 internal/syncer        扫描、manifest、分片哈希缓存、上传引擎、last-run
 main_test.go           端到端测试：httptest 假 xpan + 临时目录
-build.ps1              找 Go 工具链并编译
+build.ps1              找 Go 工具链并编译（注入提交号）
+ci.ps1                 gofmt / vet / test（CI 可直接调用）
 ```
 
 ## 不可破坏的约定
@@ -118,7 +120,7 @@ build.ps1              找 Go 工具链并编译
 ## 改完自检
 
 - [ ] `go fmt ./...`、`go vet ./...` 干净
-- [ ] `go test ./...` 通过
+- [ ] `go test ./...` 通过（或直接 `.\ci.ps1 -Build`）
 - [ ] 改 CLI/配置/状态/行为 → 同步更新 README
 - [ ] 改版本 → `internal/syncer/engine.go` 的 `Version` + README 变更记录
 - [ ] 交付 exe → `.\build.ps1` 重新构建
@@ -130,3 +132,4 @@ build.ps1              找 Go 工具链并编译
 - 2026-10-22：3.0.1，补充单实例锁、认证短路、日志格式约定。
 - 2026-10-22：3.0.2，manifest 批量刷盘、缓存无 fsync + 清理、退避 jitter。
 - 2026-10-22：3.0.3，删除计数、panic 兜底、实传统计、重试上限。
+- 2026-10-22：3.0.4，版本注入提交号、ci.ps1、拆分 upload.go、清理死代码。

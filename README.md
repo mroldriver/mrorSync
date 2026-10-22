@@ -88,6 +88,7 @@ notepad config.json
 ```powershell
 .\build.ps1            # 生成 mrorsync.exe
 .\build.ps1 -Test      # 编译 + go test ./...
+.\ci.ps1 -Build        # 格式检查 + vet + 测试 + 构建（CI 可直接调用）
 ```
 
 手动编译：
@@ -330,12 +331,14 @@ git push
 │   ├── baidu/           xpan API：重试、续期、目录缓存、分片、删除
 │   ├── fsutil/          原子写文件
 │   └── syncer/          扫描、manifest、哈希缓存、上传引擎
-├── build.ps1            构建脚本（自动找 Go）
+├── build.ps1            构建脚本（自动找 Go，注入提交号）
+├── ci.ps1               本地/CI 检查：gofmt、vet、test
 ├── config.example.json  配置模板
 └── AGENTS.md            给 AI/自动化代理的开发约定
 ```
 
-版本号在 `internal/syncer/engine.go` 的 `Version`；改完跑 `.\build.ps1 -Test` 再提交。
+版本号在 `internal/syncer/engine.go` 的 `Version`；构建时 `build.ps1` 把当前提交注入
+`BuildCommit`，`--version` 会输出 `3.0.4 (abc1234)`。改完跑 `.\ci.ps1 -Build` 再提交。
 
 ## 故障排查
 
@@ -365,6 +368,12 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.4
+
+- `build.ps1` 注入提交号，`--version` 显示 `版本 (提交)`
+- 新增 `ci.ps1`：gofmt/vet/test（`-Build` 附带构建），可作为 Gitee Go 流水线命令
+- 删除未使用的 `ErrnoOf`/`IsFatal`；上传逻辑拆到 `internal/syncer/upload.go`
 
 ### 3.0.3
 

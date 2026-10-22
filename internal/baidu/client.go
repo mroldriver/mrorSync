@@ -660,35 +660,10 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// ErrnoOf extracts a Baidu errno from an error, or 0.
-func ErrnoOf(err error) int {
-	var ae *APIError
-	if errors.As(err, &ae) {
-		return ae.Errno
-	}
-	var he *HTTPError
-	if errors.As(err, &he) {
-		return -he.Status
-	}
-	return 0
-}
-
-// IsFatal reports whether retrying this error is pointless.
-func IsFatal(err error) bool {
-	var ae *APIError
-	if errors.As(err, &ae) {
-		return ae.Fatal
-	}
-	var he *HTTPError
-	if errors.As(err, &he) {
-		return he.Status >= 400 && he.Status < 500 && he.Status != 408 && he.Status != 429
-	}
-	return false
-}
-
 // IsAuthError reports whether err means the access token is no longer usable and
-// the whole run must stop until the user authorizes again. Unlike IsFatal this
-// is about the run, not one file: a bad filename (31066) is file-level.
+// the whole run must stop until the user authorizes again. Unlike retryable
+// errors this is about the run, not one file: a bad filename (31066) is
+// file-level and must not stop everything.
 func IsAuthError(err error) bool {
 	var ae *APIError
 	if errors.As(err, &ae) {

@@ -57,7 +57,11 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 		return 2
 	}
 	if version {
-		fmt.Fprintln(out, syncer.Version)
+		if syncer.BuildCommit != "" {
+			fmt.Fprintf(out, "%s (%s)\n", syncer.Version, syncer.BuildCommit)
+		} else {
+			fmt.Fprintln(out, syncer.Version)
+		}
 		return 0
 	}
 	if fs.NArg() > 0 {
