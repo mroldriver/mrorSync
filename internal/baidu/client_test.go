@@ -42,13 +42,24 @@ func TestIsAuthError(t *testing.T) {
 		{"errno 111", &APIError{Errno: 111}, true},
 		{"bad filename", &APIError{Errno: 31066}, false},
 		{"http 401", &HTTPError{Status: http.StatusUnauthorized}, true},
-		{"http 403", &HTTPError{Status: http.StatusForbidden}, true},
+		{"http 403 idc", &HTTPError{Status: http.StatusForbidden, Body: `{"error_code":-11015}`}, false},
 		{"http 500", &HTTPError{Status: http.StatusInternalServerError}, false},
 		{"plain", errors.New("boom"), false},
 	}
 	for _, c := range cases {
 		if got := IsAuthError(c.err); got != c.want {
 			t.Errorf("%s: IsAuthError=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTransientPCS(t *testing.T) {
+	if !transientPCS([]byte(`{"error_code":-11015,"error_msg":"dest idc equal src idc"}`)) {
+		t.Fatal("-11015 should be transient")
+	}
+	for _, body := range []string{`{"error_code":-6}`, `{"error_code":0}`, `not json`, ``} {
+		if transientPCS([]byte(body)) {
+			t.Fatalf("%q should not be transient", body)
 		}
 	}
 }

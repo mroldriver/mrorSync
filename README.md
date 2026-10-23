@@ -421,6 +421,12 @@ git push
 
 ## 变更记录
 
+### 3.0.9
+
+- 修复：PCS 分片上传的 HTTP 403（`error_code=-11015 dest idc equal src idc`）被误判为
+  认证失败，导致整轮同步中止；403 不再触发认证短路
+- `-11015` 视为瞬时 IDC 路由错误，按普通退避重试（真机复测：单独重试 27/27 成功）
+
 ### 3.0.8
 
 - 新增 `exclude_paths`（配置）、`--exclude-path`（CLI，可重复）、`MRORSYNC_EXCLUDE_PATHS`：

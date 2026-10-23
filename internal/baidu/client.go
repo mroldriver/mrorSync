@@ -276,6 +276,12 @@ func (c *Client) do(ctx context.Context, build func(context.Context) (*http.Requ
 			}
 			retryable := res.StatusCode == http.StatusRequestTimeout ||
 				res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500
+			// PCS returns 403 {"error_code":-11015,"error_msg":"dest idc equal
+			// src idc"} when the upload lands on a bad IDC; retrying usually
+			// routes the next attempt correctly.
+			if res.StatusCode == http.StatusForbidden && transientPCS(body) {
+				retryable = true
+			}
 			if !retryable {
 				return nil, he
 			}
@@ -679,7 +685,8 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // IsAuthError reports whether err means the access token is no longer usable and
 // the whole run must stop until the user authorizes again. Unlike retryable
 // errors this is about the run, not one file: a bad filename (31066) is
-// file-level and must not stop everything.
+// file-level and must not stop everything. HTTP 403 is deliberately NOT auth:
+// PCS uses it for transient IDC routing errors (-11015).
 func IsAuthError(err error) bool {
 	var ae *APIError
 	if errors.As(err, &ae) {
@@ -687,7 +694,18 @@ func IsAuthError(err error) bool {
 	}
 	var he *HTTPError
 	if errors.As(err, &he) {
-		return he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden
+		return he.Status == http.StatusUnauthorized
 	}
 	return false
+}
+
+// transientPCS reports whether a PCS 403 body carries a known transient error.
+func transientPCS(body []byte) bool {
+	var m struct {
+		ErrorCode int `json:"error_code"`
+	}
+	if json.Unmarshal(body, &m) != nil {
+		return false
+	}
+	return m.ErrorCode == -11015
 }

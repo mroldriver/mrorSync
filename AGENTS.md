@@ -74,8 +74,9 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 11. **单实例锁**：`Run` 必须在 state 目录持有 `.state/run.lock`，并在所有返回路径释放；
     新增提前返回的分支不要绕过 `defer lock.Release()`。锁超过
     `tuning.lock_stale_hours`（默认 24h）视为残留可接管。
-12. **认证错误短路**：`baidu.IsAuthError`（-6/110/111、401/403）必须终止整轮并跳过删除，
-    不能降级成“每个文件失败一次”；文件级错误（如 31066）仍只记单个失败。
+12. **认证错误短路**：`baidu.IsAuthError`（errno -6/110/111、HTTP 401）必须终止整轮并
+    跳过删除，不能降级成“每个文件失败一次”；HTTP 403 不算认证失败（PCS 用它表示瞬时
+    IDC 问题），文件级错误（如 31066）仍只记单个失败。
 13. **日志**：所有输出走 `logf`（带时间戳、加锁）；不要在业务代码里直接写 stdout，
     也不要按字节截断错误响应文本。
 14. **配置分层**：优先级固定为「CLI > `MRORSYNC_*` 环境变量 > `config.json` > 默认值」。
@@ -118,6 +119,8 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - **百度 API 契约**：`method`、`access_token` 必须放 query string；`filemanager` 的
   `opera`/`async` 也必须在 query，只有 `filelist` 放 body。放错位置分别得到
   HTTP 400 `Unsupported open api` 和 `errno=2`。
+- PCS 分片上传的 `403 -11015 dest idc equal src idc` 是瞬时 IDC 路由问题，可重试；
+  不要把 HTTP 403 当成认证失败（只有 401 和 errno -6/110/111 才短路整轮）。
 - `precreate` 返回的 `block_list` 是**待上传的分片序号**（数字），不是 md5；旧版/测试
   返回 md5 列表，解析时按元素类型区分。
 - CRLF 警告来自 Windows 换行，不影响构建。
@@ -150,3 +153,4 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - 2026-10-22：3.0.6，配置版本/tuning/环境变量/CLI 覆盖、print-config/check-config。
 - 2026-10-22：3.0.7，真实 API 契约修正（query 参数、block_list 序号），完成真机上传/删除验证。
 - 2026-10-23：3.0.8，新增按路径排除（`exclude_paths` / `--exclude-path` / 环境变量）。
+- 2026-10-23：3.0.9，修复 403 误判认证失败，-11015 按瞬时错误重试。
