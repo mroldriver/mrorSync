@@ -688,6 +688,48 @@ func TestEnvOverrideWorkers(t *testing.T) {
 	}
 }
 
+func TestExcludePathSkipsSubtree(t *testing.T) {
+	e := setup(t)
+
+	data, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg["exclude_paths"] = []string{"sub/deep"}
+	data, _ = json.MarshalIndent(cfg, "", "  ")
+	mustWrite(t, e.cfgPath, data)
+
+	code, out := e.run("--apply", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("exclude_paths exit=%d\n%s", code, out)
+	}
+	man := e.manifest()
+	if _, ok := man["sub/deep/c.bin"]; ok {
+		t.Fatal("excluded subtree was uploaded")
+	}
+	if len(man) != 4 {
+		t.Fatalf("manifest=%d, want 4", len(man))
+	}
+}
+
+func TestExcludePathFlagSkipsSubtree(t *testing.T) {
+	e := setup(t)
+	code, out := e.run("--apply", "--exclude-path", "sub/deep", "--config", e.cfgPath)
+	if code != 0 {
+		t.Fatalf("--exclude-path exit=%d\n%s", code, out)
+	}
+	if _, ok := e.manifest()["sub/deep/c.bin"]; ok {
+		t.Fatal("--exclude-path did not skip the subtree")
+	}
+	if len(e.manifest()) != 4 {
+		t.Fatalf("manifest=%d, want 4", len(e.manifest()))
+	}
+}
+
 func TestCreateAlreadyExistsIsSuccess(t *testing.T) {
 	e := setup(t)
 	e.mock.mu.Lock()

@@ -150,6 +150,53 @@ func TestDefaultPathHonorsEnv(t *testing.T) {
 	}
 }
 
+func TestExcludePathsNormalize(t *testing.T) {
+	root := tempRoot(t)
+	inside := filepath.Join(root, "data", "cache")
+	outside := filepath.Join(filepath.Dir(root), "elsewhere")
+
+	c := Default()
+	c.Root = root
+	c.ExcludePaths = []string{
+		"data\\cache", // backslashes -> slashes
+		"/data/logs/", // surrounding slashes trimmed
+		inside,        // absolute under root -> relative
+		outside,       // outside root -> ignored with warning
+		"DATA/CACHE",  // duplicate, case-insensitive
+	}
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"data/cache", "data/logs"}
+	if len(c.ExcludePaths) != len(want) {
+		t.Fatalf("exclude_paths=%v, want %v", c.ExcludePaths, want)
+	}
+	for i := range want {
+		if c.ExcludePaths[i] != want[i] {
+			t.Fatalf("exclude_paths[%d]=%q, want %q", i, c.ExcludePaths[i], want[i])
+		}
+	}
+	if len(c.Warnings) != 1 {
+		t.Fatalf("warnings=%v, want 1 (outside root)", c.Warnings)
+	}
+}
+
+func TestLoadEnvExcludePaths(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	root := tempRoot(t)
+	if err := os.WriteFile(cfgPath, []byte(`{"root":`+quote(root)+`}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MRORSYNC_EXCLUDE_PATHS", "a/b;c\\d")
+	c, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.ExcludePaths) != 2 || c.ExcludePaths[0] != "a/b" || c.ExcludePaths[1] != `c\d` {
+		t.Fatalf("exclude_paths=%v", c.ExcludePaths)
+	}
+}
+
 func quote(s string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 }

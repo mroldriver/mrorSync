@@ -28,5 +28,6 @@
     ".state",
     "pagefile.sys",
     "hiberfil.sys"
-  ]
+  ],
+  "exclude_paths": []
 }

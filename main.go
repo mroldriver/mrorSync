@@ -35,8 +35,9 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 	fs := flag.NewFlagSet("mrorsync", flag.ContinueOnError)
 	fs.SetOutput(out)
 	var (
-		o       syncer.Options
-		version bool
+		o           syncer.Options
+		version     bool
+		excludePath stringListFlag
 	)
 	fs.BoolVar(&o.Apply, "apply", false, "真正写入远端")
 	fs.BoolVar(&o.Full, "full", false, "忽略 size/mtime 快路径")
@@ -51,6 +52,7 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 	fs.IntVar(&o.MaxWorkers, "max-workers", 0, "一次性覆盖 max_workers")
 	fs.IntVar(&o.PartWorkers, "part-workers", 0, "一次性覆盖 part_workers")
 	fs.StringVar(&o.StateDir, "state-dir", "", "一次性覆盖 state_dir")
+	fs.Var(&excludePath, "exclude-path", "额外排除的目录/文件（相对 root，可重复）")
 	fs.BoolVar(&o.PrintConfig, "print-config", false, "打印生效配置（密钥打码）后退出")
 	fs.BoolVar(&o.CheckConfig, "check-config", false, "只校验配置后退出")
 	fs.BoolVar(&version, "version", false, "打印版本")
@@ -76,7 +78,18 @@ func run(ctx context.Context, args []string, out io.Writer, in io.Reader) int {
 		return 2
 	}
 	o.Out = out
+	o.ExcludePaths = excludePath
 	return syncer.Run(ctx, o)
+}
+
+// stringListFlag collects a repeatable string flag.
+type stringListFlag []string
+
+func (s *stringListFlag) String() string { return strings.Join(*s, ",") }
+
+func (s *stringListFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
 }
 
 func printHelp(w io.Writer) {
@@ -96,6 +109,7 @@ func printHelp(w io.Writer) {
   --max-workers <N>   一次性覆盖 max_workers
   --part-workers <N>  一次性覆盖 part_workers
   --state-dir <路径>  一次性覆盖 state_dir
+  --exclude-path <路径> 额外排除某个目录/文件（相对 root，可重复）
   --print-config      打印生效配置（token/secret 打码）后退出
   --check-config      只校验配置并打印摘要，不扫描不联网
   --version           打印版本

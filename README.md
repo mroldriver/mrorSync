@@ -123,7 +123,8 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 | `part_workers` | int | `2` | 单个文件内并发上传的分片数，范围 1–8 |
 | `max_file_size` | int | `4294967296` | 单文件上限（字节），默认 4 GB |
 | `state_dir` | string | `<exe>/.state` | 状态目录；也可用环境变量覆盖 |
-| `excludes` | string[] | 见下 | 扫描时跳过的目录/文件名 |
+| `excludes` | string[] | 见下 | 按文件名/目录名跳过（任意层级） |
+| `exclude_paths` | string[] | 空 | 按相对路径跳过某个目录/文件（可精确到子树） |
 | `tuning` | object | 见下 | 运维调参，可选；不写就用默认值 |
 
 `app_id`、`sign_key` 仍会被保留以免旧配置报错，但当前版本不使用。
@@ -151,6 +152,21 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 匹配规则：按**文件名**（不是完整路径）匹配，大小写不敏感，支持 `*` 通配
 （如 `*.class`、`*.tmp`）；不支持 `dir/**` 这类路径通配。
 
+### 按路径排除
+
+`excludes` 是“名字”匹配，任何层级出现同名目录都会被跳过；如果只想排除某一个具体目录，
+用 `exclude_paths`（相对 `root`，`/` 或 `\` 均可，大小写不敏感）：
+
+```json
+"exclude_paths": ["BaiduSyncdisk", "项目A/临时"]
+```
+
+- 命中目录 → 整个子树都不扫描；命中文件 → 只跳过该文件
+- 目录名相同但位置不同的其他目录不受影响（例如 `D:\项目A\临时` 被排除，`D:\项目B\临时` 不会）
+- 绝对路径若位于 `root` 下会自动转成相对路径；不在 `root` 下的条目会打印警告并忽略
+- 命令行可临时追加（可重复）：`.\mrorsync.exe --exclude-path 项目A/临时`
+- 环境变量：`MRORSYNC_EXCLUDE_PATHS`（逗号/分号分隔）
+
 ### 环境变量
 
 | 变量 | 作用 |
@@ -160,7 +176,8 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -trimpath -o mrorsync .
 | `MRORSYNC_MAX_WORKERS` / `MRORSYNC_PART_WORKERS` | 覆盖并发数 |
 | `MRORSYNC_MAX_FILE_SIZE` | 覆盖单文件上限（字节） |
 | `MRORSYNC_STATE_DIR` | 状态目录；优先级低于 `state_dir` |
-| `MRORSYNC_EXCLUDES` | 逗号/分号分隔的排除项 |
+| `MRORSYNC_EXCLUDES` | 逗号/分号分隔的排除项（按名字） |
+| `MRORSYNC_EXCLUDE_PATHS` | 逗号/分号分隔的排除路径（相对 `root`） |
 | `MRORSYNC_APP_KEY` / `MRORSYNC_SECRET_KEY` | 覆盖应用凭证 |
 | `MRORSYNC_ACCESS_TOKEN` / `MRORSYNC_REFRESH_TOKEN` | 覆盖 token（适合 CI，注意环境安全） |
 | `MRORSYNC_RETRY_TRIES` 等 | 覆盖对应 `tuning` 字段（变量名为 `MRORSYNC_` + 字段名大写） |
@@ -189,6 +206,7 @@ mrorsync.exe login [--config 路径]
 | `--max-workers <N>` | 一次性覆盖 `max_workers` |
 | `--part-workers <N>` | 一次性覆盖 `part_workers` |
 | `--state-dir <路径>` | 一次性覆盖 `state_dir` |
+| `--exclude-path <路径>` | 额外排除某个目录/文件（相对 `root`，可重复） |
 | `--print-config` | 打印生效配置（token/secret 打码）后退出，便于排查 |
 | `--check-config` | 只校验配置并打印摘要，不扫描、不联网 |
 | `--version` | 打印版本号（含构建提交） |
@@ -402,6 +420,13 @@ git push
 - 仓库暂未声明开源许可证
 
 ## 变更记录
+
+### 3.0.8
+
+- 新增 `exclude_paths`（配置）、`--exclude-path`（CLI，可重复）、`MRORSYNC_EXCLUDE_PATHS`：
+  按相对 `root` 的路径排除指定目录或文件，命中目录时整棵子树跳过
+- `excludes` 保持按名字匹配；两者可组合使用
+- 绝对路径位于 `root` 下时自动转相对路径，`root` 外的条目告警后忽略
 
 ### 3.0.7
 

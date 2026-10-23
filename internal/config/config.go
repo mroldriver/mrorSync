@@ -64,7 +64,10 @@ type Config struct {
 	MaxFileSize   int64    `json:"max_file_size"`
 	StateDir      string   `json:"state_dir"`
 	Excludes      []string `json:"excludes"`
-	Tuning        Tuning   `json:"tuning"`
+	// ExcludePaths are relative paths (dir or file) under root to skip entirely;
+	// unlike Excludes (base-name matching) they target one specific subtree.
+	ExcludePaths []string `json:"exclude_paths"`
+	Tuning       Tuning   `json:"tuning"`
 
 	// Warnings collects non-fatal adjustments made by Normalize (clamped values,
 	// ignored fields) so the caller can show them instead of silently changing
@@ -224,6 +227,7 @@ func (c *Config) Normalize() error {
 	for i := range c.Excludes {
 		c.Excludes[i] = strings.TrimSpace(c.Excludes[i])
 	}
+	c.ExcludePaths = normalizeExcludePaths(c.Root, c.ExcludePaths, &c.Warnings)
 	if c.StateDir != "" {
 		abs, err := filepath.Abs(c.StateDir)
 		if err != nil {
@@ -254,6 +258,39 @@ func (c *Config) clampWarn(name string, v, dflt, min, max int) int {
 		c.Warnings = append(c.Warnings, fmt.Sprintf("%s=%d 超出范围 [%d,%d]，已调整为 %d", name, v, min, max, clamp(v, dflt, min, max)))
 	}
 	return clamp(v, dflt, min, max)
+}
+
+// normalizeExcludePaths turns entries into relative paths with '/' separators.
+// Absolute paths under root are converted; absolute paths outside root are
+// ignored with a warning instead of silently excluding nothing.
+func normalizeExcludePaths(root string, in []string, warnings *[]string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		p := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+		if p == "" {
+			continue
+		}
+		if filepath.IsAbs(filepath.FromSlash(p)) {
+			rel, err := filepath.Rel(root, filepath.FromSlash(p))
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				*warnings = append(*warnings, fmt.Sprintf("exclude_paths 项 %q 不在 root 下，已忽略", raw))
+				continue
+			}
+			p = filepath.ToSlash(rel)
+		}
+		p = strings.Trim(p, "/")
+		if p == "" {
+			continue
+		}
+		key := strings.ToLower(p)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // NormalizeRemoteBase turns "/备份/D盘/" or "备份\D盘" into "/备份/D盘"; "/" stays "/".
@@ -350,6 +387,9 @@ func applyEnv(c *Config) error {
 	setStr("MRORSYNC_STATE_DIR", &c.StateDir)
 	if v, ok := os.LookupEnv("MRORSYNC_EXCLUDES"); ok {
 		c.Excludes = splitList(v)
+	}
+	if v, ok := os.LookupEnv("MRORSYNC_EXCLUDE_PATHS"); ok {
+		c.ExcludePaths = splitList(v)
 	}
 
 	ints := []struct {

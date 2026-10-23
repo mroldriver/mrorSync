@@ -81,6 +81,8 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 14. **配置分层**：优先级固定为「CLI > `MRORSYNC_*` 环境变量 > `config.json` > 默认值」。
     新增配置字段必须给默认值、允许旧文件缺失，并同步 `Normalize`/`applyEnv`/README；
     运维阈值放 `tuning`，不要再把数字写死在代码里。
+15. **两种排除**：`excludes` 按文件名/目录名匹配（任意层级同名都命中）；`exclude_paths`
+    按相对 `root` 的路径匹配（命中目录则跳过整棵子树）。两者语义不要合并。
 
 ## 测试要求
 
@@ -147,3 +149,4 @@ ci.ps1                 gofmt / vet / test（CI 可直接调用）
 - 2026-10-22：3.0.5，测试按场景拆分、--limit 日志顺序、OKRels 单次遍历。
 - 2026-10-22：3.0.6，配置版本/tuning/环境变量/CLI 覆盖、print-config/check-config。
 - 2026-10-22：3.0.7，真实 API 契约修正（query 参数、block_list 序号），完成真机上传/删除验证。
+- 2026-10-23：3.0.8，新增按路径排除（`exclude_paths` / `--exclude-path` / 环境变量）。

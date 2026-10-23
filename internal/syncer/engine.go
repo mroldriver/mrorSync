@@ -20,7 +20,7 @@ import (
 )
 
 // Version is printed by --version.
-var Version = "3.0.7"
+var Version = "3.0.8"
 
 // BuildCommit is injected by build.ps1 (-ldflags -X) so --version can be tied to
 // a specific commit; it stays empty for plain `go build`.
@@ -39,11 +39,12 @@ type Options struct {
 	Out         io.Writer
 
 	// One-shot overrides; empty/zero means "use config file / environment".
-	Root        string
-	RemoteBase  string
-	MaxWorkers  int
-	PartWorkers int
-	StateDir    string
+	Root         string
+	RemoteBase   string
+	MaxWorkers   int
+	PartWorkers  int
+	StateDir     string
+	ExcludePaths []string
 
 	PrintConfig bool
 	CheckConfig bool
@@ -128,6 +129,9 @@ func Run(ctx context.Context, opts Options) int {
 	}
 	if opts.StateDir != "" {
 		cfg.StateDir = opts.StateDir
+	}
+	if len(opts.ExcludePaths) > 0 {
+		cfg.ExcludePaths = append(cfg.ExcludePaths, opts.ExcludePaths...)
 	}
 	if err := cfg.Normalize(); err != nil {
 		logf("%v", err)

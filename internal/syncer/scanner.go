@@ -28,9 +28,10 @@ type ScanResult struct {
 type excludeMatcher struct {
 	exact map[string]bool
 	wild  []*regexp.Regexp
+	paths []string
 }
 
-func newExcludeMatcher(patterns []string) *excludeMatcher {
+func newExcludeMatcher(patterns, paths []string) *excludeMatcher {
 	m := &excludeMatcher{exact: map[string]bool{}}
 	for _, raw := range patterns {
 		p := strings.TrimSpace(raw)
@@ -46,6 +47,13 @@ func newExcludeMatcher(patterns []string) *excludeMatcher {
 			continue
 		}
 		m.exact[strings.ToLower(p)] = true
+	}
+	for _, p := range paths {
+		p = strings.Trim(strings.ReplaceAll(strings.TrimSpace(p), "\\", "/"), "/")
+		if p == "" {
+			continue
+		}
+		m.paths = append(m.paths, strings.ToLower(p))
 	}
 	return m
 }
@@ -63,10 +71,22 @@ func (m *excludeMatcher) match(name string) bool {
 	return false
 }
 
+// matchPath reports whether rel (a file or directory) is the excluded path or
+// lives under it. Matching is case-insensitive on the '/' separated rel path.
+func (m *excludeMatcher) matchPath(rel string) bool {
+	lower := strings.ToLower(strings.ReplaceAll(rel, "\\", "/"))
+	for _, p := range m.paths {
+		if lower == p || strings.HasPrefix(lower, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // Scan walks cfg.Root, honouring excludes and the optional --only prefix.
 // Symlinks/junctions are skipped so a link loop can never hang the backup.
 func Scan(cfg *config.Config, only string, logf func(string, ...any)) (ScanResult, error) {
-	matcher := newExcludeMatcher(cfg.Excludes)
+	matcher := newExcludeMatcher(cfg.Excludes, cfg.ExcludePaths)
 	onlyKey := strings.ToLower(strings.Trim(strings.ReplaceAll(only, "\\", "/"), "/"))
 	matchOnly := func(rel string) bool {
 		if onlyKey == "" {
@@ -102,6 +122,9 @@ func Scan(cfg *config.Config, only string, logf func(string, ...any)) (ScanResul
 			rel := name
 			if relDir != "" {
 				rel = relDir + "/" + name
+			}
+			if matcher.matchPath(rel) {
+				continue
 			}
 			if !matchOnly(rel) {
 				continue
