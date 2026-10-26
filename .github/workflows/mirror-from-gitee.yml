@@ -1,0 +1,145 @@
+name: mirror-from-gitee
+
+# Gitee 是代码真源，GitHub 是镜像 + 构建/发版平台。
+# 本工作流定时把 Gitee 的分支与标签强制同步到 GitHub，不涉及 Gitee Release。
+#
+# 两条硬规则（也是安全护栏，不要删）：
+#   1) 不要在 GitHub 上直接提交/合并：下一次镜像会把它覆盖掉。
+#   2) Gitee 的对应分支里必须已经有 .github/workflows/：
+#      强制同步是整棵树覆盖，Gitee 没有这些文件就会把 GitHub 上的工作流删掉（含本文件）。
+#      默认分支缺失时直接失败；其它分支缺失时跳过该分支并告警。
+#
+# 首次启用顺序：本地提交本文件 -> 推 Gitee（origin，develop 和 master 都要）-> 推 GitHub
+# -> 再到 Actions 手动跑一次确认。
+
+on:
+  schedule:
+    - cron: '43 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '允许覆盖 GitHub 上多出来的提交（危险，会丢提交）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write        # gh workflow run 需要
+
+concurrency:
+  group: mirror-from-gitee
+  cancel-in-progress: false
+
+env:
+  GITEE_REPO: mroldriver/mrorSync
+  REQUIRED_FILE: .github/workflows/release.yml
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 拉取 Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GITEE_TOKEN:-}" ]; then
+            url="https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          else
+            url="https://gitee.com/${GITEE_REPO}.git"
+          fi
+          git remote add gitee "$url" 2>/dev/null || git remote set-url gitee "$url"
+          git fetch --tags --force --prune gitee '+refs/heads/*:refs/remotes/gitee/*'
+          echo "--- Gitee 侧引用："
+          git for-each-ref --format='%(refname:short) %(objectname:short)' refs/remotes/gitee
+          echo "--- Gitee 标签："
+          git tag --list 'v*' --sort=-creatordate | head -5
+
+      - name: 安全检查
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          src="refs/remotes/gitee/${DEFAULT_BRANCH}"
+
+          if ! git rev-parse --verify --quiet "$src" >/dev/null; then
+            echo "::error::Gitee 上找不到分支 ${DEFAULT_BRANCH}，拒绝同步"
+            exit 1
+          fi
+
+          if ! git cat-file -e "${src}:${REQUIRED_FILE}" 2>/dev/null; then
+            echo "::error::Gitee 的 ${DEFAULT_BRANCH} 缺少 ${REQUIRED_FILE}；强制同步会把 GitHub 默认分支上的工作流删掉。请先把 .github/workflows 提交推送到 Gitee 的该分支。"
+            exit 1
+          fi
+
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+
+          failed=0
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/gitee); do
+            b="${ref#gitee/}"
+            [ "$b" = "HEAD" ] && continue
+            echo "--- 检查分支 $b"
+            if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
+              if ! git merge-base --is-ancestor "refs/remotes/origin/$b" "refs/remotes/gitee/$b"; then
+                if [ "${FORCE:-false}" = "true" ]; then
+                  echo "::warning::GitHub 的 $b 存在 Gitee 没有的提交，按 force=true 强制覆盖"
+                else
+                  echo "::error::GitHub 的 $b 存在 Gitee 没有的提交（很可能是有人在 GitHub 直接提交）。强制同步会丢掉它们；确认要丢弃请手动触发并勾选 force。"
+                  failed=1
+                fi
+              fi
+            else
+              echo "GitHub 上尚无 $b，将新建"
+            fi
+          done
+          exit $failed
+
+      - name: 强制同步到 GitHub
+        run: |
+          set -euo pipefail
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/gitee); do
+            b="${ref#gitee/}"
+            [ "$b" = "HEAD" ] && continue
+
+            # 别把 GitHub 侧的工作流删掉：Gitee 该分支没有 workflow 文件时跳过
+            if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null \
+               && git cat-file -e "refs/remotes/origin/$b:${REQUIRED_FILE}" 2>/dev/null \
+               && ! git cat-file -e "refs/remotes/gitee/$b:${REQUIRED_FILE}" 2>/dev/null; then
+              echo "::warning::跳过分支 $b：GitHub 侧有 ${REQUIRED_FILE} 而 Gitee 侧没有，同步会删掉工作流"
+              continue
+            fi
+
+            echo "==> 分支 $b"
+            # 只更新 Gitee 上存在的分支，绝不删除 GitHub 独有的分支
+            git push --force origin "refs/remotes/gitee/${b}:refs/heads/${b}"
+          done
+
+          if [ -n "$(git tag --list 'v*' | head -1)" ]; then
+            echo "==> 标签"
+            # 标签只新增/更新，不删除 GitHub 上已有的
+            git push --force origin 'refs/tags/*:refs/tags/*'
+          else
+            echo "Gitee 上没有 v* 标签，跳过"
+          fi
+
+      - name: 为新标签触发 Release 构建
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN 推送产生的 push 事件不会触发其它工作流，
+          # 所以这里对“还没有 Release 的 v* 标签”显式 dispatch 一次 release.yml。
+          for t in $(git tag --list 'v*' --sort=-creatordate | head -3); do
+            if gh release view "$t" >/dev/null 2>&1; then
+              echo "$t 已有 Release，跳过"
+            else
+              echo "$t 没有 Release，触发构建"
+              gh workflow run release.yml --ref "$DEFAULT_BRANCH" -f "tag=$t"
+            fi
+          done

@@ -370,7 +370,18 @@ git commit -m "说明"
 git push
 ```
 
-发布：`develop` 合并到 `master`，在 Gitee 建 Release/tag。
+发布流程（Gitee 只托管代码，构建与产物全在 GitHub Release）：
+
+1. `develop` 合并到 `master`
+2. 打标签并发到 Gitee（GitHub 侧由 `mirror-from-gitee` 定时镜像过去）：
+
+   ```powershell
+   git tag v1.4.0
+   git push origin v1.4.0
+   ```
+
+3. GitHub Actions 的 `release` 工作流构建四平台产物（windows/linux × amd64/arm64）
+   并挂到 GitHub Release；镜像推送出来的新标签由 `mirror-from-gitee` 自动触发，不必手工点。
 
 目录结构：
 

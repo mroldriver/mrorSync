@@ -1,0 +1,135 @@
+name: release
+
+# 打 v* 标签即构建并发布；也可在 Actions 页面手动填 tag 触发试跑。
+# 产物直接挂到 GitHub Release（单文件 <= 2 GiB，public 仓库不占额度）。
+# 不在 CI 里跑 git push：代码同步交给 scripts/git-sync.ps1，职责分开。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v1.4.0），必须已存在'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            pkg: zip
+          - goos: windows
+            goarch: arm64
+            pkg: zip
+          - goos: linux
+            goarch: amd64
+            pkg: tar
+          - goos: linux
+            goarch: arm64
+            pkg: tar
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: 解析版本信息
+        id: meta
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: 测试
+        run: go test ./...
+
+      - name: 构建
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          ldflags="-s -w -X mrorsync/internal/syncer.BuildCommit=${{ steps.meta.outputs.commit }}"
+          ext=""
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          go build -trimpath -ldflags "$ldflags" -o "mrorsync${ext}" .
+          # 交叉编译出来的产物不能在当前 runner 上执行，仅确认文件非空
+          test -s "mrorsync${ext}"
+
+      - name: 打包
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="mrorsync_${{ steps.meta.outputs.tag }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p out
+          if [ "${{ matrix.pkg }}" = "zip" ]; then
+            zip -9 "out/${name}.zip" mrorsync.exe README.md
+            asset="out/${name}.zip"
+          else
+            tar -czf "out/${name}.tar.gz" mrorsync README.md
+            asset="out/${name}.tar.gz"
+          fi
+          (cd out && sha256sum "$(basename "$asset")" > "$(basename "$asset").sha256")
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 汇总校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          cat *.sha256 | sort -k2 > sha256sums.txt
+          rm -f *.sha256
+          cat sha256sums.txt
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "mrorSync $TAG" \
+              --generate-notes
+          fi
